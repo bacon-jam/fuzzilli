@@ -130,7 +130,7 @@ ssize_t socket_send(libsocket_t sock, const uint8_t *data, size_t length) {
     while (remaining) {
         int rv = send(sock, (const char *)data, remaining, 0);
         if (rv == SOCKET_ERROR)
-            return GetLastError() == WSAEWOULDBLOCK ? length - remaining : rv;
+            return WSAGetLastError() == WSAEWOULDBLOCK ? length - remaining : rv;
         remaining -= rv;
         data += rv;
     }

@@ -42,7 +42,8 @@ let package = Package(
     targets: [
         .target(
             name: "libsocket",
-            dependencies: []),
+            dependencies: [],
+            linkerSettings: [.linkedLibrary("Ws2_32", .when(platforms: [.windows]))]),
 
         .target(
             name: "libreprl",

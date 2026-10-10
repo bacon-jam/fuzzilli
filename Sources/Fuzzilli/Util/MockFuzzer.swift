@@ -87,10 +87,26 @@ class MockEvaluator: ProgramEvaluator {
     func resetState() {}
 }
 func findWasmOptInPath() -> String? {
-    guard let pathVar = ProcessInfo.processInfo.environment["PATH"] else { return nil }
-    let directories = pathVar.split(separator: ":")
+    let environment = ProcessInfo.processInfo.environment
+    #if os(Windows)
+        let pathVar = environment.first(where: {
+            $0.key.caseInsensitiveCompare("PATH") == .orderedSame
+        })?.value
+    #else
+        let pathVar = environment["PATH"]
+    #endif
+    guard let pathVar else { return nil }
+    #if os(Windows)
+        let separator: Character = ";"
+        let executable = "wasm-opt.exe"
+    #else
+        let separator: Character = ":"
+        let executable = "wasm-opt"
+    #endif
+    let directories = pathVar.split(separator: separator)
     for directory in directories {
-        let path = String(directory) + "/wasm-opt"
+        let path = URL(fileURLWithPath: String(directory), isDirectory: true)
+            .appendingPathComponent(executable).path
         if FileManager.default.isExecutableFile(atPath: path) {
             return path
         }

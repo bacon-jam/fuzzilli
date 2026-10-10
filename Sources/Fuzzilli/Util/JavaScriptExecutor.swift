@@ -184,16 +184,34 @@ public class JavaScriptExecutor {
 
     /// Looks for an executable named `node` in the $PATH and, if found, returns it.
     private static func findNodeJsExecutable() -> String? {
-        if let pathVar = ProcessInfo.processInfo.environment["PATH"] {
-            var directories = pathVar.split(separator: ":")
-            // Also append the homebrew binary path since it may not be in $PATH, especially inside XCode.
-            directories.append("/opt/homebrew/bin")
+        let environment = ProcessInfo.processInfo.environment
+        #if os(Windows)
+            let pathVar = environment.first(where: {
+                $0.key.caseInsensitiveCompare("PATH") == .orderedSame
+            })?.value
+        #else
+            let pathVar = environment["PATH"]
+        #endif
+        if let pathVar {
+            #if os(Windows)
+                let separator: Character = ";"
+                let executable = "node.exe"
+            #else
+                let separator: Character = ":"
+                let executable = "node"
+            #endif
+            var directories = pathVar.split(separator: separator)
+            #if !os(Windows)
+                // Also append the homebrew binary path since it may not be in $PATH, especially inside XCode.
+                directories.append("/opt/homebrew/bin")
+            #endif
             // Append the CWD to enable bundling node.js from where the script
             // is called.
             directories.append(
                 String.SubSequence(FileManager.default.currentDirectoryPath))
             for directory in directories {
-                let path = String(directory + "/node")
+                let path = URL(fileURLWithPath: String(directory), isDirectory: true)
+                    .appendingPathComponent(executable).path
                 if FileManager.default.isExecutableFile(atPath: path) {
                     return path
                 }

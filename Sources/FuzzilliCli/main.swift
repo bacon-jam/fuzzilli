@@ -15,6 +15,10 @@
 import Foundation
 import Fuzzilli
 
+#if os(Windows)
+    import WinSDK
+#endif
+
 //
 // Process commandline arguments.
 //
@@ -781,21 +785,38 @@ let shutdownGroup = DispatchGroup()
 var workers: [Fuzzer] = []
 var mainShutdownReason: ShutdownReason? = nil
 
-// Install signal handlers to terminate the fuzzer gracefully.
-var signalSources: [DispatchSourceSignal] = []
-for sig in [SIGINT, SIGTERM] {
-    // Seems like we need this so the dispatch sources work correctly?
-    signal(sig, SIG_IGN)
-
-    let source = DispatchSource.makeSignalSource(signal: sig, queue: DispatchQueue.main)
-    source.setEventHandler {
-        fuzzer.async {
-            fuzzer.shutdown(reason: .userInitiated)
+// Handle console interrupts by shutting down the fuzzer on its own queue.
+#if os(Windows)
+    let consoleHandler: PHANDLER_ROUTINE = { event in
+        switch event {
+        case DWORD(CTRL_C_EVENT), DWORD(CTRL_BREAK_EVENT):
+            fuzzer.async {
+                fuzzer.shutdown(reason: .userInitiated)
+            }
+            return true
+        default:
+            return false
         }
     }
-    source.activate()
-    signalSources.append(source)
-}
+    if !SetConsoleCtrlHandler(consoleHandler, true) {
+        logger.warning("Could not install console interrupt handler")
+    }
+#else
+    var signalSources: [DispatchSourceSignal] = []
+    for sig in [SIGINT, SIGTERM] {
+        // Seems like we need this so the dispatch sources work correctly?
+        signal(sig, SIG_IGN)
+
+        let source = DispatchSource.makeSignalSource(signal: sig, queue: DispatchQueue.main)
+        source.setEventHandler {
+            fuzzer.async {
+                fuzzer.shutdown(reason: .userInitiated)
+            }
+        }
+        source.activate()
+        signalSources.append(source)
+    }
+#endif
 
 // Exit this process when all fuzzer instances have stopped.
 shutdownGroup.enter()

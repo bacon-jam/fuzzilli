@@ -14,6 +14,8 @@ The basic steps to use this fuzzer are:
 
 Building and running Fuzzilli and the supported JavaScript engines inside Docker and on Google Compute Engine is [also supported](./Cloud).
 
+On Windows, the [QuickJS target instructions](Targets/QJS/README.md#native-windows-build) provide a native build and run path using Swift and MSYS2 UCRT64 Clang.
+
 ### Hacking
 
 Check out [main.swift](Sources/FuzzilliCli/main.swift) to see a usage example of the Fuzzilli library and play with the various configuration options. Next, take a look at [Fuzzer.swift](Sources/Fuzzilli/Fuzzer.swift) for the highlevel fuzzing logic. From there dive into any part that seems interesting.

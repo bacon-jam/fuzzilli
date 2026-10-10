@@ -61,6 +61,84 @@ jobs:
       - name: Run tests with d8
         run: FUZZILLI_TEST_SHELL=~/.jsvu/engines/v8/v8 Tools/run_tests.py Tests/failing_jsvu.txt -c ${{ matrix.kind }} --no-parallel
 
+  windows_build_test:
+    timeout-minutes: 60
+    runs-on: windows-2022
+
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Swift 6.4.0
+        uses: compnerd/gha-setup-swift@bbae8ce86bac5a3449f3992b3d88bc4ca25f2057 # v0.5.0
+        with:
+          swift-version: swift-6.4.0-release
+          swift-build: 6.4.0-RELEASE
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Build and run focused Swift tests
+        shell: cmd
+        run: |
+          call "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=x64
+          if errorlevel 1 exit /b 1
+          swift --version
+          if errorlevel 1 exit /b 1
+          swift build -j 4
+          if errorlevel 1 exit /b 1
+          swift run --skip-build FuzzilliCli --help >nul
+          if errorlevel 1 exit /b 1
+          node --version
+          if errorlevel 1 exit /b 1
+          swift test -j 4 --filter TestUtilsTests.testJavaScriptExecutorLargeOutput
+          if errorlevel 1 exit /b 1
+      - name: Run Windows REPRL transport smoke test
+        shell: cmd
+        run: |
+          call "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=x64
+          if errorlevel 1 exit /b 1
+          cl /nologo /std:c11 /W4 /WX /utf-8 /I "Sources\libreprl\include" ^
+            Sources\libreprl\libreprl-windows.c Tests\WindowsREPRLSmoke.c ^
+            /Fe:WindowsREPRLSmoke.exe
+          if errorlevel 1 exit /b 1
+          WindowsREPRLSmoke.exe
+          if errorlevel 1 exit /b 1
+      - name: Install MSYS2 UCRT64 for QuickJS
+        id: msys2
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            make
+            mingw-w64-ucrt-x86_64-clang
+      - name: Build patched QuickJS
+        shell: msys2 {0}
+        run: |
+          git clone https://github.com/bellard/quickjs.git quickjs
+          cd quickjs
+          git checkout "$(tr -d '\r\n' < ../Targets/QJS/REVISION)"
+          git apply ../Targets/QJS/Patches/Fuzzilli-instrumentation-for-QJS.patch
+          make CONFIG_WIN32=y CROSS_PREFIX= CONFIG_LTO= qjs.exe
+      - name: Run QuickJS REPRL and fuzzing checks
+        shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          $env:Path = "$env:MSYS2_LOCATION\ucrt64\bin;$env:Path"
+          $reprlOutput = '' | swift run --skip-build REPRLRun .\quickjs\qjs.exe --reprl 2>&1
+          $reprlOutput | Select-String 'Running REPRL tests|All tests passed|Not all tests passed'
+          $reprlText = $reprlOutput -join "`n"
+          if ($LASTEXITCODE -ne 0 -or $reprlText -notmatch 'All tests passed!') {
+            throw 'QuickJS REPRL tests failed'
+          }
+          $fuzzOutput = swift run --skip-build FuzzilliCli --profile=qjs --maxIterations=20 .\quickjs\qjs.exe 2>&1
+          $fuzzOutput | Select-String 'Coverage|Startup tests finished|Total Samples|Fuzzer Finished'
+          $fuzzText = $fuzzOutput -join "`n"
+          if ($LASTEXITCODE -ne 0 -or $fuzzText -notmatch 'Startup tests finished successfully'
+              -or $fuzzText -notmatch 'Total Samples:\s+20') {
+            throw 'QuickJS fuzzing check failed'
+          }
+
   asan:
     timeout-minutes: 30
     runs-on: ubuntu-latest

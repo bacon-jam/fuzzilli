@@ -12,6 +12,9 @@ Note that when fuzzing with ASan or another sanitizer, `"ASAN_OPTIONS": "abort_o
 ### Code Coverage
 Fuzzilli performs guided fuzzing based on code coverage.
 In order to implement this, [coverage.c](./coverage.c) needs to be included in the build, and `__sanitizer_cov_reset_edgeguards()` needs to be available for the REPRL implementation.
+On Windows, Fuzzilli creates a named file mapping whose name is passed in `SHM_ID`.
+Windows targets must open and map that name with `OpenFileMapping` and `MapViewOfFile` instead of using the POSIX `shm_open` and `mmap` calls in `coverage.c`.
+The mapping size is `0x200000` bytes on every platform.
 
 ### Adding Read-Eval-Print-Reset-Loop
 In order to iterate quickly with minimal overhead, Fuzzilli operates with a Read-Eval-Print-Reset loop, where one process of the engine runs many test cases, resetting itself between each one.
@@ -22,7 +25,7 @@ The max number of iterations value is set by the `maxExecsBeforeRespawn` constan
 This is only rough psuedocode as an overview. Please reference the appropriate lines in one of the patch files for an example implementation.
 
 ```
-(Must include the 4 defined File Descriptor numbers REPRL_CRFD, REPRL_CWFD, REPRL_DRFD, REPRL_DWFD)
+(On POSIX, use the 4 defined file descriptors REPRL_CRFD, REPRL_CWFD, REPRL_DRFD, REPRL_DWFD)
 
 if REPRL_MODE on commandline:
     write "HELO" on REPRL_CWFD
@@ -31,7 +34,7 @@ if REPRL_MODE on commandline:
     optionally, mmap the REPRL_DRFD with size REPRL_MAX_DATA_SIZE
     while true:
         read 4 bytes on REPRL_CRFD
-        break if 4 read bytes do not equal "cexe"
+        break if 4 read bytes do not equal "exec"
         read 8 bytes on REPRL_CRFD, store as unsigned 64 bit integer size
         allocate size+1 bytes
         read size bytes from REPRL_DRFD into allocated buffer, either via memory mapped IO or the read syscall (make sure to account for short reads in the latter case)
@@ -45,6 +48,13 @@ if REPRL_MODE on commandline:
 
 REPRL's exit status format is similar to the one used on e.g. Linux or macOS: the lower 8 bits contain the number of the terminating signal (if any), the next 8 bits contain the exit status.
 As such, it is also possible to "emulate" a crash in the target by setting the lower 8 bits of the exit status to a nonzero value. In that case, Fuzzilli would treat the execution as a crash.
+
+On Windows, the parent passes four inherited handle values as decimal strings in
+`FUZZILLI_REPRL_CRFD`, `FUZZILLI_REPRL_CWFD`, `FUZZILLI_REPRL_DRFD`, and
+`FUZZILLI_REPRL_DWFD`. The first two are control pipes; the latter two are
+seekable data files. A Windows target can convert these handles to C runtime
+descriptors with `_open_osfhandle`, or use the Win32 I/O APIs directly. It must
+use the same `HELO`, `exec`, script-length, and status messages shown above.
 
 ### Adding Custom "fuzzilli" Javascript Builtin
 At startup, Fuzzilli executes code specified in the `startupTests` in the profile to for example ensure that crashes are correctly detected.

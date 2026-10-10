@@ -15,6 +15,10 @@
 import Foundation
 import libcoverage
 
+#if os(Windows)
+    import WinSDK
+#endif
+
 /// Represents a set of newly discovered CFG edges in the target program.
 public class CovEdgeSet: ProgramAspects {
     private var numEdges: UInt32

@@ -264,6 +264,18 @@ private class Connection {
             }
         } while numBytesRead > 0
 
+        #if os(Windows)
+            if numBytesRead < 0 {
+                // A nonblocking socket reports WSAEWOULDBLOCK after its receive
+                // buffer has been drained; wait for the next read event.
+                if WSAGetLastError() == WSAEWOULDBLOCK {
+                    guard gotData else { return }
+                } else {
+                    return error("Failed to receive data")
+                }
+            }
+        #endif
+
         guard gotData else {
             // We got a read event but no data was available so the remote end must have closed the connection.
             return error("Connection closed by peer")
@@ -378,25 +390,41 @@ public class NetworkParent: DistributedFuzzingParentNode {
 
         func initialize() {
             self.serverFd = libsocket.socket_listen(address, port)
-            guard serverFd > 0 else {
+            guard serverFd != INVALID_SOCKET else {
                 logger.fatal("Failed to open server socket")
             }
 
-            self.serverQueue = DispatchQueue(label: "Server Queue \(serverFd)")
+            let serverQueue = DispatchQueue(label: "Server Queue \(serverFd)")
+            self.serverQueue = serverQueue
             #if os(Windows)
-                self.connectionSource = DispatchSource.makeReadSource(
-                    handle: HANDLE(bitPattern: UInt(serverFd))!, queue: serverQueue)
+                // Windows dispatch read sources monitor FD_READ, not FD_ACCEPT. The
+                // listening socket is blocking, so accept connections on this queue.
+                let listener = serverFd
+                serverQueue.async {
+                    while true {
+                        let socket = libsocket.socket_accept(listener)
+                        guard socket != INVALID_SOCKET else {
+                            self.fuzzer.async {
+                                self.logger.error("Failed to accept client connection")
+                            }
+                            break
+                        }
+                        self.fuzzer.async {
+                            self.handleNewConnection(socket)
+                        }
+                    }
+                }
             #else
                 self.connectionSource = DispatchSource.makeReadSource(
                     fileDescriptor: serverFd, queue: serverQueue)
-            #endif
-            self.connectionSource?.setEventHandler {
-                let socket = libsocket.socket_accept(self.serverFd)
-                self.fuzzer.async {
-                    self.handleNewConnection(socket)
+                self.connectionSource?.setEventHandler {
+                    let socket = libsocket.socket_accept(self.serverFd)
+                    self.fuzzer.async {
+                        self.handleNewConnection(socket)
+                    }
                 }
-            }
-            connectionSource?.activate()
+                connectionSource?.activate()
+            #endif
 
             logger.info("Accepting worker connections on \(address):\(port)")
         }
@@ -467,7 +495,7 @@ public class NetworkParent: DistributedFuzzingParentNode {
         }
 
         private func handleNewConnection(_ socket: libsocket.libsocket_t) {
-            guard socket > 0 else {
+            guard socket != INVALID_SOCKET else {
                 return logger.error("Failed to accept client connection")
             }
 

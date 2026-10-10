@@ -15,6 +15,10 @@
 import Foundation
 import Synchronization
 
+#if os(Windows)
+    import WinSDK
+#endif
+
 public struct BinaryenRunner {
     /// List of experimental Wasm GC and other feature flags passed to wasm-opt
     public static let featureArguments = [
@@ -69,13 +73,25 @@ public struct BinaryenRunner {
         let timeout: TimeInterval = 2 * Seconds
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
         timer.schedule(deadline: .now() + timeout)
-        timer.setEventHandler {
-            if process.isRunning {
-                logger.warning("wasm-opt still running after \(timeout)s, sending SIGKILL")
-                timedOut.store(true, ordering: .sequentiallyConsistent)
-                kill(process.processIdentifier, SIGKILL)
-            }
-        }
+        timer.setEventHandler(
+            handler: DispatchWorkItem {
+                if process.isRunning {
+                    logger.warning("wasm-opt still running after \(timeout)s, terminating it")
+                    timedOut.store(true, ordering: .sequentiallyConsistent)
+                    #if os(Windows)
+                        if let handle = OpenProcess(
+                            DWORD(PROCESS_TERMINATE), false, DWORD(process.processIdentifier))
+                        {
+                            defer { CloseHandle(handle) }
+                            TerminateProcess(handle, 1)
+                        } else {
+                            process.terminate()
+                        }
+                    #else
+                        kill(process.processIdentifier, SIGKILL)
+                    #endif
+                }
+            })
         timer.resume()
         defer {
             timer.cancel()
