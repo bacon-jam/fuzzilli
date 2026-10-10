@@ -1,5 +1,5 @@
 diff --git a/Makefile b/Makefile
-index 49b1f6f..cef6360 100644
+index 49b1f6f..a126a00 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -34,11 +34,9 @@ CONFIG_LTO=y
@@ -38,13 +38,21 @@ index 49b1f6f..cef6360 100644
  QJS_OBJS=$(OBJDIR)/qjs.o $(OBJDIR)/repl.o $(QJS_LIB_OBJS)
 +QJSC_LIB_OBJS=$(patsubst %.o, %.tool.o, $(QJS_LIB_OBJS))
 +ifdef CONFIG_WIN32
-+QJS_OBJS+=$(OBJDIR)/fuzzilli-coverage-coff.tool.o
++QJS_COVERAGE_OBJS=$(OBJDIR)/fuzzilli-coverage-coff.tool.o
 +endif
  ifdef CONFIG_BIGNUM
  QJS_LIB_OBJS+=$(OBJDIR)/libbf.o 
  QJS_OBJS+=$(OBJDIR)/qjscalc.o
-@@ -190,7 +193,7 @@ qjs$(EXE): $(QJS_OBJS)
- qjs-debug$(EXE): $(patsubst %.o, %.debug.o, $(QJS_OBJS))
+@@ -184,13 +187,13 @@ LIBS+=$(EXTRA_LIBS)
+ $(OBJDIR):
+ 	mkdir -p $(OBJDIR) $(OBJDIR)/examples $(OBJDIR)/tests
+ 
+-qjs$(EXE): $(QJS_OBJS)
++qjs$(EXE): $(QJS_OBJS) $(QJS_COVERAGE_OBJS)
+ 	$(CC) $(LDFLAGS) $(LDEXPORT) -o $@ $^ $(LIBS)
+ 
+-qjs-debug$(EXE): $(patsubst %.o, %.debug.o, $(QJS_OBJS))
++qjs-debug$(EXE): $(patsubst %.o, %.debug.o, $(QJS_OBJS)) $(QJS_COVERAGE_OBJS)
  	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
  
 -qjsc$(EXE): $(OBJDIR)/qjsc.o $(QJS_LIB_OBJS)
@@ -52,14 +60,22 @@ index 49b1f6f..cef6360 100644
  	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
  
  ifneq ($(CROSS_PREFIX),)
-@@ -208,6 +211,7 @@ endif
+@@ -208,12 +211,13 @@ endif
  QJSC_HOST_DEFINES:=-DCONFIG_CC=\"$(HOST_CC)\" -DCONFIG_PREFIX=\"$(prefix)\"
  
  $(OBJDIR)/qjsc.o: CFLAGS+=$(QJSC_DEFINES)
 +$(OBJDIR)/qjsc.tool.o: CFLAGS+=$(QJSC_DEFINES)
  $(OBJDIR)/qjsc.host.o: CFLAGS+=$(QJSC_HOST_DEFINES)
  
- qjs32: $(patsubst %.o, %.m32.o, $(QJS_OBJS))
+-qjs32: $(patsubst %.o, %.m32.o, $(QJS_OBJS))
++qjs32: $(patsubst %.o, %.m32.o, $(QJS_OBJS)) $(QJS_COVERAGE_OBJS)
+ 	$(CC) -m32 $(LDFLAGS) $(LDEXPORT) -o $@ $^ $(LIBS)
+ 
+-qjs32_s: $(patsubst %.o, %.m32s.o, $(QJS_OBJS))
++qjs32_s: $(patsubst %.o, %.m32s.o, $(QJS_OBJS)) $(QJS_COVERAGE_OBJS)
+ 	$(CC) -m32 $(LDFLAGS) -o $@ $^ $(LIBS)
+ 	@size $@
+ 
 @@ -262,8 +266,11 @@ run-test262-32: $(patsubst %.o, %.m32.o, $(OBJDIR)/run-test262.o $(QJS_LIB_OBJS)
  $(OBJDIR)/%.o: %.c | $(OBJDIR)
  	$(CC) $(CFLAGS_OPT) -c -o $@ $<
@@ -116,7 +132,7 @@ index 0000000..686a60a
 +uint32_t __stop___sancov_guards __attribute__((section(".SCOV$GZ"), used));
 +#endif
 diff --git a/qjs.c b/qjs.c
-index d56b843..20a1ddd 100644
+index d56b843..f97da97 100644
 --- a/qjs.c
 +++ b/qjs.c
 @@ -37,6 +37,13 @@
@@ -133,7 +149,7 @@ index d56b843..20a1ddd 100644
  
  #include "cutils.h"
  #include "quickjs-libc.h"
-@@ -280,6 +287,167 @@ static const JSMallocFunctions trace_mf = {
+@@ -280,6 +287,203 @@ static const JSMallocFunctions trace_mf = {
  
  #define PROG_NAME "qjs"
  
@@ -142,7 +158,7 @@ index d56b843..20a1ddd 100644
 +#define CHECK(cond) do {                                  \
 +    if (!(cond)) {                                        \
 +        fprintf(stderr, "\"" #cond "\" failed\n");       \
-+        _exit(-1);                                        \
++        _exit(EXIT_FAILURE);                              \
 +    }                                                     \
 +} while (0)
 +
@@ -197,22 +213,58 @@ index d56b843..20a1ddd 100644
 +
 +struct shmem_data *__shmem;
 +uint32_t *__edges_start, *__edges_stop;
-+static int reprl_unhandled_rejections;
++
++typedef struct ReprlRejectedPromise {
++    JSValue promise;
++    struct ReprlRejectedPromise *next;
++} ReprlRejectedPromise;
++
++static ReprlRejectedPromise *reprl_rejected_promises;
++static BOOL reprl_track_rejections;
++static BOOL reprl_rejection_tracking_failed;
 +
 +static void reprl_promise_rejection_tracker(JSContext *ctx, JSValueConst promise,
 +                                            JSValueConst reason, BOOL is_handled,
 +                                            void *opaque)
 +{
-+    (void)ctx;
-+    (void)promise;
++    ReprlRejectedPromise **pp, *p;
++
 +    (void)reason;
 +    (void)opaque;
++    if (!reprl_track_rejections)
++        return;
 +    if (is_handled) {
-+        if (reprl_unhandled_rejections > 0)
-+            reprl_unhandled_rejections--;
++        for (pp = &reprl_rejected_promises; (p = *pp) != NULL; pp = &p->next) {
++            if (JS_VALUE_GET_PTR(p->promise) == JS_VALUE_GET_PTR(promise)) {
++                *pp = p->next;
++                JS_FreeValue(ctx, p->promise);
++                js_free(ctx, p);
++                break;
++            }
++        }
 +    } else {
-+        reprl_unhandled_rejections++;
++        p = js_malloc(ctx, sizeof(*p));
++        if (!p) {
++            reprl_rejection_tracking_failed = TRUE;
++            return;
++        }
++        p->promise = JS_DupValue(ctx, promise);
++        p->next = reprl_rejected_promises;
++        reprl_rejected_promises = p;
 +    }
++}
++
++static void reprl_clear_rejected_promises(JSContext *ctx)
++{
++    ReprlRejectedPromise *p, *next;
++
++    for (p = reprl_rejected_promises; p != NULL; p = next) {
++        next = p->next;
++        JS_FreeValue(ctx, p->promise);
++        js_free(ctx, p);
++    }
++    reprl_rejected_promises = NULL;
++    reprl_rejection_tracking_failed = FALSE;
 +}
 +
 +void __sanitizer_cov_reset_edgeguards(void)
@@ -235,7 +287,7 @@ index d56b843..20a1ddd 100644
 +
 +    if (__edges_start != NULL || __edges_stop != NULL) {
 +        fprintf(stderr, "Coverage instrumentation is only supported for a single module\n");
-+        _exit(-1);
++        _exit(EXIT_FAILURE);
 +    }
 +
 +    __edges_start = start;
@@ -246,26 +298,26 @@ index d56b843..20a1ddd 100644
 +    if (!shm_key) {
 +        __shmem = (struct shmem_data *)calloc(1, SHM_SIZE);
 +        if (!__shmem)
-+            _exit(-1);
++            _exit(EXIT_FAILURE);
 +    } else {
 +#ifdef _WIN32
 +        HANDLE mapping = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, shm_key);
 +        if (!mapping) {
 +            fprintf(stderr, "Failed to open shared memory region: %lu\n", GetLastError());
-+            _exit(-1);
++            _exit(EXIT_FAILURE);
 +        }
 +        __shmem = (struct shmem_data *)MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS,
 +                                                     0, 0, SHM_SIZE);
 +        CloseHandle(mapping);
 +        if (!__shmem) {
 +            fprintf(stderr, "Failed to map shared memory region: %lu\n", GetLastError());
-+            _exit(-1);
++            _exit(EXIT_FAILURE);
 +        }
 +#else
 +        int fd = shm_open(shm_key, O_RDWR, S_IREAD | S_IWRITE);
 +        if (fd <= -1) {
 +            fprintf(stderr, "Failed to open shared memory region: %s\n", strerror(errno));
-+            _exit(-1);
++            _exit(EXIT_FAILURE);
 +        }
 +
 +        __shmem = (struct shmem_data *)mmap(0, SHM_SIZE, PROT_READ | PROT_WRITE,
@@ -273,7 +325,7 @@ index d56b843..20a1ddd 100644
 +        close(fd);
 +        if (__shmem == MAP_FAILED) {
 +            fprintf(stderr, "Failed to mmap shared memory region\n");
-+            _exit(-1);
++            _exit(EXIT_FAILURE);
 +        }
 +#endif
 +    }
@@ -301,7 +353,7 @@ index d56b843..20a1ddd 100644
  void help(void)
  {
      printf("QuickJS version " CONFIG_VERSION "\n"
-@@ -325,6 +493,9 @@ int main(int argc, char **argv)
+@@ -325,6 +529,9 @@ int main(int argc, char **argv)
      int load_jscalc;
  #endif
      size_t stack_size = 0;
@@ -311,7 +363,7 @@ index d56b843..20a1ddd 100644
      
  #ifdef CONFIG_BIGNUM
      /* load jscalc runtime if invoked as 'qjscalc' */
-@@ -445,6 +616,10 @@ int main(int argc, char **argv)
+@@ -445,6 +652,10 @@ int main(int argc, char **argv)
                  stack_size = (size_t)strtod(argv[optind++], NULL);
                  continue;
              }
@@ -322,7 +374,7 @@ index d56b843..20a1ddd 100644
              if (opt) {
                  fprintf(stderr, "qjs: unknown option '-%c'\n", opt);
              } else {
-@@ -454,6 +629,24 @@ int main(int argc, char **argv)
+@@ -454,6 +665,24 @@ int main(int argc, char **argv)
          }
      }
  
@@ -340,14 +392,14 @@ index d56b843..20a1ddd 100644
 +
 +        if (memcmp(helo, "HELO", 4) != 0) {
 +            printf("Invalid response from parent\n");
-+            _exit(-1);
++            _exit(EXIT_FAILURE);
 +        }
 +    }
 +
      if (load_jscalc)
          bignum_ext = 1;
  
-@@ -482,7 +675,9 @@ int main(int argc, char **argv)
+@@ -482,7 +711,9 @@ int main(int argc, char **argv)
      /* loader for ES6 modules */
      JS_SetModuleLoaderFunc(rt, NULL, js_module_loader, NULL);
  
@@ -358,7 +410,7 @@ index d56b843..20a1ddd 100644
          JS_SetHostPromiseRejectionTracker(rt, js_std_promise_rejection_tracker,
                                            NULL);
      }
-@@ -509,23 +704,105 @@ int main(int argc, char **argv)
+@@ -509,23 +740,107 @@ int main(int argc, char **argv)
                  goto fail;
          }
  
@@ -381,7 +433,7 @@ index d56b843..20a1ddd 100644
 +                    CHECK(reprl_read(REPRL_CRFD, &wire_script_size, 8) == 8);
 +                } else {
 +                    fprintf(stderr, "Unknown REPRL action\n");
-+                    _exit(-1);
++                    _exit(EXIT_FAILURE);
 +                }
 +                CHECK(wire_script_size <= 0x1000000);
 +                script_size = (size_t)wire_script_size;
@@ -397,20 +449,22 @@ index d56b843..20a1ddd 100644
 +                    int rv = reprl_read(REPRL_DRFD, ptr, remaining);
 +                    if (rv <= 0) {
 +                        fprintf(stderr, "Failed to load script\n");
-+                        _exit(-1);
++                        _exit(EXIT_FAILURE);
 +                    }
 +                    remaining -= rv;
 +                    ptr += rv;
 +                }
 +                script_src[script_size] = '\0';
-+                reprl_unhandled_rejections = 0;
++                reprl_track_rejections = TRUE;
 +                if ((result = eval_buf(ctx, script_src, script_size, "reprl", 0)) == 0) {
 +                    js_std_loop(ctx);
-+                    if (reprl_unhandled_rejections)
++                    if (reprl_rejected_promises || reprl_rejection_tracking_failed)
 +                        result = -1;
 +                } else {
 +                    fprintf(stderr, "Failed to eval_buf reprl\n");
 +                }
++                reprl_track_rejections = FALSE;
++                reprl_clear_rejected_promises(ctx);
 +                js_free(ctx, script_src);
 +                js_std_free_handlers(rt);
 +                JS_FreeContext(ctx);
@@ -480,15 +534,10 @@ index d56b843..20a1ddd 100644
      
      if (dump_memory) {
 diff --git a/quickjs.c b/quickjs.c
-index 7916013..db7b286 100644
+index 7916013..1d87ca9 100644
 --- a/quickjs.c
 +++ b/quickjs.c
-@@ -28,10 +28,15 @@
- #include <inttypes.h>
- #include <string.h>
- #include <assert.h>
-+#include <errno.h>
- #include <sys/time.h>
+@@ -32,6 +32,10 @@
  #include <time.h>
  #include <fenv.h>
  #include <math.h>
@@ -499,7 +548,7 @@ index 7916013..db7b286 100644
  #if defined(__APPLE__)
  #include <malloc/malloc.h>
  #elif defined(__linux__)
-@@ -35408,6 +35413,81 @@ static JSValue JS_ReadFunctionTag(BCReaderState *s)
+@@ -35408,6 +35412,87 @@ static JSValue JS_ReadFunctionTag(BCReaderState *s)
      return JS_EXCEPTION;
  }
  
@@ -547,12 +596,16 @@ index 7916013..db7b286 100644
 +        return JS_FALSE;
 +    str = JS_ToCString(ctx, argv[0]);
 +    if (!str)
-+        return JS_FALSE;
++        return JS_EXCEPTION;
 +    if (!strcmp(str, "FUZZILLI_CRASH")) {
 +        int type;
-+        if (argc < 2 || JS_ToInt32(ctx, &type, argv[1])) {
++        if (argc < 2) {
 +            JS_FreeCString(ctx, str);
 +            return JS_FALSE;
++        }
++        if (JS_ToInt32(ctx, &type, argv[1])) {
++            JS_FreeCString(ctx, str);
++            return JS_EXCEPTION;
 +        }
 +        switch (type) {
 +        case 0:
@@ -568,10 +621,12 @@ index 7916013..db7b286 100644
 +    } else if (!strcmp(str, "FUZZILLI_PRINT") && argc > 1) {
 +        FILE *fzliout = fuzzilli_output();
 +        const char *print_str = JS_ToCString(ctx, argv[1]);
-+        if (print_str) {
-+            fprintf(fzliout, "%s\n", print_str);
-+            JS_FreeCString(ctx, print_str);
++        if (!print_str) {
++            JS_FreeCString(ctx, str);
++            return JS_EXCEPTION;
 +        }
++        fprintf(fzliout, "%s\n", print_str);
++        JS_FreeCString(ctx, print_str);
 +        fflush(fzliout);
 +    }
 +    JS_FreeCString(ctx, str);
@@ -581,7 +636,7 @@ index 7916013..db7b286 100644
  static JSValue JS_ReadModule(BCReaderState *s)
  {
      JSContext *ctx = s->ctx;
-@@ -47856,6 +47936,7 @@ static JSValue js_global_unescape(JSContext *ctx, JSValueConst this_val,
+@@ -47856,6 +47941,7 @@ static JSValue js_global_unescape(JSContext *ctx, JSValueConst this_val,
  
  static const JSCFunctionListEntry js_global_funcs[] = {
      JS_CFUNC_DEF("parseInt", 2, js_parseInt ),
