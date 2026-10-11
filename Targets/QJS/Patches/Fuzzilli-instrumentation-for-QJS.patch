@@ -1,8 +1,23 @@
 diff --git a/Makefile b/Makefile
-index 49b1f6f..a126a00 100644
+index 49b1f6f..10cf9a8 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -34,11 +34,9 @@ CONFIG_LTO=y
+@@ -25,20 +25,24 @@
+ ifeq ($(shell uname -s),Darwin)
+ CONFIG_DARWIN=y
+ endif
++ifneq ($(findstring MINGW,$(shell uname -s)),)
++CONFIG_WIN32=y
++CONFIG_NATIVE_WIN32=y
++endif
+ # Windows cross compilation from Linux
+ #CONFIG_WIN32=y
+ # use link time optimization (smaller and faster executables but slower build)
++ifndef CONFIG_WIN32
+ CONFIG_LTO=y
++endif
+ # consider warnings as errors (for development)
+ #CONFIG_WERROR=y
  # force 32 bit build for some utilities
  #CONFIG_M32=y
  
@@ -15,7 +30,25 @@ index 49b1f6f..a126a00 100644
  
  # installation directory
  prefix=/usr/local
-@@ -74,6 +72,7 @@ ifdef CONFIG_CLANG
+@@ -53,10 +57,14 @@ CONFIG_BIGNUM=y
+ OBJDIR=.obj
+ 
+ ifdef CONFIG_WIN32
+-  ifdef CONFIG_M32
+-    CROSS_PREFIX=i686-w64-mingw32-
++  ifdef CONFIG_NATIVE_WIN32
++    CROSS_PREFIX=
+   else
+-    CROSS_PREFIX=x86_64-w64-mingw32-
++    ifdef CONFIG_M32
++      CROSS_PREFIX=i686-w64-mingw32-
++    else
++      CROSS_PREFIX=x86_64-w64-mingw32-
++    endif
+   endif
+   EXE=.exe
+ else
+@@ -74,6 +82,7 @@ ifdef CONFIG_CLANG
    CFLAGS += -Wunused -Wno-unused-parameter
    CFLAGS += -Wwrite-strings
    CFLAGS += -Wchar-subscripts -funsigned-char
@@ -23,7 +56,7 @@ index 49b1f6f..a126a00 100644
    CFLAGS += -MMD -MF $(OBJDIR)/$(@F).d
    ifdef CONFIG_DEFAULT_AR
      AR=$(CROSS_PREFIX)ar
-@@ -112,7 +111,7 @@ CFLAGS_DEBUG=$(CFLAGS) -O0
+@@ -112,7 +121,7 @@ CFLAGS_DEBUG=$(CFLAGS) -O0
  CFLAGS_SMALL=$(CFLAGS) -Os
  CFLAGS_OPT=$(CFLAGS) -O2
  CFLAGS_NOLTO:=$(CFLAGS_OPT)
@@ -32,26 +65,90 @@ index 49b1f6f..a126a00 100644
  ifdef CONFIG_LTO
  CFLAGS_SMALL+=-flto
  CFLAGS_OPT+=-flto
-@@ -169,6 +168,10 @@ all: $(OBJDIR) $(OBJDIR)/quickjs.check.o $(OBJDIR)/qjs.check.o $(PROGS)
+@@ -132,7 +141,7 @@ else
+ LDEXPORT=-rdynamic
+ endif
+ 
+-PROGS=qjs$(EXE) qjsc$(EXE) run-test262
++PROGS=qjs$(EXE) qjsc$(EXE) run-test262$(EXE)
+ ifneq ($(CROSS_PREFIX),)
+ QJSC_CC=gcc
+ QJSC=./host-qjsc
+@@ -145,7 +154,7 @@ ifndef CONFIG_WIN32
+ PROGS+=qjscalc
+ endif
+ ifdef CONFIG_M32
+-PROGS+=qjs32 qjs32_s
++PROGS+=qjs32$(EXE) qjs32_s$(EXE)
+ endif
+ PROGS+=libquickjs.a
+ ifdef CONFIG_LTO
+@@ -157,7 +166,7 @@ ifeq ($(CROSS_PREFIX),)
+ ifdef CONFIG_ASAN
+ PROGS+=
+ else
+-PROGS+=examples/hello examples/hello_module examples/test_fib
++PROGS+=examples/hello$(EXE) examples/hello_module$(EXE) examples/test_fib$(EXE)
+ ifndef CONFIG_DARWIN
+ PROGS+=examples/fib.so examples/point.so
+ endif
+@@ -169,14 +178,37 @@ all: $(OBJDIR) $(OBJDIR)/quickjs.check.o $(OBJDIR)/qjs.check.o $(PROGS)
  QJS_LIB_OBJS=$(OBJDIR)/quickjs.o $(OBJDIR)/libregexp.o $(OBJDIR)/libunicode.o $(OBJDIR)/cutils.o $(OBJDIR)/quickjs-libc.o
  
  QJS_OBJS=$(OBJDIR)/qjs.o $(OBJDIR)/repl.o $(QJS_LIB_OBJS)
 +QJSC_LIB_OBJS=$(patsubst %.o, %.tool.o, $(QJS_LIB_OBJS))
 +ifdef CONFIG_WIN32
 +QJS_COVERAGE_OBJS=$(OBJDIR)/fuzzilli-coverage-coff.tool.o
++QJS_M32_COVERAGE_OBJS=$(OBJDIR)/fuzzilli-coverage-coff.m32.tool.o
++QJS_PLAIN_LIB_OBJS=$(QJSC_LIB_OBJS)
++QJS_IMPORT_LIB=libqjs.dll.a
++QJS_EXPORT_FLAGS=-Wl,--export-all-symbols -Wl,--out-implib,$(QJS_IMPORT_LIB)
++QJS_MODULE_DEP=$(QJS_IMPORT_LIB)
++EXAMPLE_OBJ_SUFFIX=.tool.o
++EXAMPLE_M32_SUFFIX=.m32s.tool.o
++PIC_OBJ_SUFFIX=.tool.pic.o
++else
++QJS_PLAIN_LIB_OBJS=$(QJS_LIB_OBJS)
++EXAMPLE_OBJ_SUFFIX=.o
++EXAMPLE_M32_SUFFIX=.m32s.o
++PIC_OBJ_SUFFIX=.pic.o
 +endif
  ifdef CONFIG_BIGNUM
  QJS_LIB_OBJS+=$(OBJDIR)/libbf.o 
  QJS_OBJS+=$(OBJDIR)/qjscalc.o
-@@ -184,13 +187,13 @@ LIBS+=$(EXTRA_LIBS)
+ endif
++RUN_TEST262_OBJS=$(OBJDIR)/run-test262.o $(QJS_LIB_OBJS)
++ifdef CONFIG_WIN32
++RUN_TEST262_OBJS:=$(patsubst %.o, %.tool.o, $(RUN_TEST262_OBJS))
++endif
+ 
+ HOST_LIBS=-lm -ldl -lpthread
+ LIBS=-lm
+-ifndef CONFIG_WIN32
++ifdef CONFIG_WIN32
++LIBS+=-lpthread
++else
+ LIBS+=-ldl -lpthread
+ endif
+ LIBS+=$(EXTRA_LIBS)
+@@ -184,13 +216,21 @@ LIBS+=$(EXTRA_LIBS)
  $(OBJDIR):
  	mkdir -p $(OBJDIR) $(OBJDIR)/examples $(OBJDIR)/tests
  
 -qjs$(EXE): $(QJS_OBJS)
-+qjs$(EXE): $(QJS_OBJS) $(QJS_COVERAGE_OBJS)
- 	$(CC) $(LDFLAGS) $(LDEXPORT) -o $@ $^ $(LIBS)
+-	$(CC) $(LDFLAGS) $(LDEXPORT) -o $@ $^ $(LIBS)
++QJS_LINK_COMMAND=$(CC) $(LDFLAGS) $(LDEXPORT) $(QJS_EXPORT_FLAGS) -o qjs$(EXE) $(QJS_OBJS) $(QJS_COVERAGE_OBJS) $(LIBS)
  
 -qjs-debug$(EXE): $(patsubst %.o, %.debug.o, $(QJS_OBJS))
++qjs$(EXE): $(QJS_OBJS) $(QJS_COVERAGE_OBJS)
++	$(QJS_LINK_COMMAND)
++
++ifdef CONFIG_WIN32
++$(QJS_IMPORT_LIB): qjs$(EXE)
++	@test -f $@ || $(QJS_LINK_COMMAND)
++	@touch $@
++endif
++
 +qjs-debug$(EXE): $(patsubst %.o, %.debug.o, $(QJS_OBJS)) $(QJS_COVERAGE_OBJS)
  	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
  
@@ -60,7 +157,7 @@ index 49b1f6f..a126a00 100644
  	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
  
  ifneq ($(CROSS_PREFIX),)
-@@ -208,12 +211,13 @@ endif
+@@ -208,12 +248,13 @@ endif
  QJSC_HOST_DEFINES:=-DCONFIG_CC=\"$(HOST_CC)\" -DCONFIG_PREFIX=\"$(prefix)\"
  
  $(OBJDIR)/qjsc.o: CFLAGS+=$(QJSC_DEFINES)
@@ -68,20 +165,66 @@ index 49b1f6f..a126a00 100644
  $(OBJDIR)/qjsc.host.o: CFLAGS+=$(QJSC_HOST_DEFINES)
  
 -qjs32: $(patsubst %.o, %.m32.o, $(QJS_OBJS))
-+qjs32: $(patsubst %.o, %.m32.o, $(QJS_OBJS)) $(QJS_COVERAGE_OBJS)
++qjs32$(EXE): $(patsubst %.o, %.m32.o, $(QJS_OBJS)) $(QJS_M32_COVERAGE_OBJS)
  	$(CC) -m32 $(LDFLAGS) $(LDEXPORT) -o $@ $^ $(LIBS)
  
 -qjs32_s: $(patsubst %.o, %.m32s.o, $(QJS_OBJS))
-+qjs32_s: $(patsubst %.o, %.m32s.o, $(QJS_OBJS)) $(QJS_COVERAGE_OBJS)
++qjs32_s$(EXE): $(patsubst %.o, %.m32s.o, $(QJS_OBJS)) $(QJS_M32_COVERAGE_OBJS)
  	$(CC) -m32 $(LDFLAGS) -o $@ $^ $(LIBS)
  	@size $@
  
-@@ -262,8 +266,11 @@ run-test262-32: $(patsubst %.o, %.m32.o, $(OBJDIR)/run-test262.o $(QJS_LIB_OBJS)
+@@ -226,11 +267,11 @@ else
+ LTOEXT=
+ endif
+ 
+-libquickjs$(LTOEXT).a: $(QJS_LIB_OBJS)
++libquickjs$(LTOEXT).a: $(QJS_PLAIN_LIB_OBJS)
+ 	$(AR) rcs $@ $^
+ 
+ ifdef CONFIG_LTO
+-libquickjs.a: $(patsubst %.o, %.nolto.o, $(QJS_LIB_OBJS))
++libquickjs.a: $(patsubst %.o, %.nolto.o, $(QJS_PLAIN_LIB_OBJS))
+ 	$(AR) rcs $@ $^
+ endif # CONFIG_LTO
+ 
+@@ -248,13 +289,13 @@ libunicode-table.h: unicode_gen
+ 	./unicode_gen unicode $@
+ endif
+ 
+-run-test262: $(OBJDIR)/run-test262.o $(QJS_LIB_OBJS)
++run-test262$(EXE): $(RUN_TEST262_OBJS)
+ 	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
+ 
+-run-test262-debug: $(patsubst %.o, %.debug.o, $(OBJDIR)/run-test262.o $(QJS_LIB_OBJS))
++run-test262-debug$(EXE): $(patsubst %.o, %.debug.o, $(RUN_TEST262_OBJS))
+ 	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
+ 
+-run-test262-32: $(patsubst %.o, %.m32.o, $(OBJDIR)/run-test262.o $(QJS_LIB_OBJS))
++run-test262-32$(EXE): $(patsubst %.o, %.m32.o, $(RUN_TEST262_OBJS))
+ 	$(CC) -m32 $(LDFLAGS) -o $@ $^ $(LIBS)
+ 
+ # object suffix order: nolto, [m32|m32s]
+@@ -262,12 +303,33 @@ run-test262-32: $(patsubst %.o, %.m32.o, $(OBJDIR)/run-test262.o $(QJS_LIB_OBJS)
  $(OBJDIR)/%.o: %.c | $(OBJDIR)
  	$(CC) $(CFLAGS_OPT) -c -o $@ $<
  
 +$(OBJDIR)/%.tool.o: %.c | $(OBJDIR)
 +	$(CC) $(CFLAGS_OPT) -fno-sanitize-coverage=trace-pc-guard -c -o $@ $<
++
++$(OBJDIR)/%.tool.debug.o: %.c | $(OBJDIR)
++	$(CC) $(CFLAGS_DEBUG) -fno-sanitize-coverage=trace-pc-guard -c -o $@ $<
++
++$(OBJDIR)/%.tool.m32.o: %.c | $(OBJDIR)
++	$(CC) -m32 $(CFLAGS_OPT) -fno-sanitize-coverage=trace-pc-guard -c -o $@ $<
++
++$(OBJDIR)/%.m32.tool.o: %.c | $(OBJDIR)
++	$(CC) -m32 $(CFLAGS_OPT) -fno-sanitize-coverage=trace-pc-guard -c -o $@ $<
++
++$(OBJDIR)/%.m32s.tool.o: %.c | $(OBJDIR)
++	$(CC) -m32 $(CFLAGS_SMALL) -fno-sanitize-coverage=trace-pc-guard -c -o $@ $<
++
++$(OBJDIR)/%.tool.nolto.o: %.c | $(OBJDIR)
++	$(CC) $(CFLAGS_NOLTO) -fno-sanitize-coverage=trace-pc-guard -c -o $@ $<
 +
  $(OBJDIR)/%.host.o: %.c | $(OBJDIR)
 -	$(HOST_CC) $(CFLAGS_OPT) -c -o $@ $<
@@ -89,6 +232,226 @@ index 49b1f6f..a126a00 100644
  
  $(OBJDIR)/%.pic.o: %.c | $(OBJDIR)
  	$(CC) $(CFLAGS_OPT) -fPIC -DJS_SHARED_LIBRARY -c -o $@ $<
+ 
++$(OBJDIR)/%.tool.pic.o: %.c | $(OBJDIR)
++	$(CC) $(CFLAGS_OPT) -fPIC -DJS_SHARED_LIBRARY -fno-sanitize-coverage=trace-pc-guard -c -o $@ $<
++
+ $(OBJDIR)/%.nolto.o: %.c | $(OBJDIR)
+ 	$(CC) $(CFLAGS_NOLTO) -c -o $@ $<
+ 
+@@ -291,19 +353,22 @@ unicode_gen: $(OBJDIR)/unicode_gen.host.o $(OBJDIR)/cutils.host.o libunicode.c u
+ 
+ clean:
+ 	rm -f repl.c qjscalc.c out.c
+-	rm -f *.a *.o *.d *~ unicode_gen regexp_test $(PROGS)
++	rm -f *.a *.o *.d *~ unicode_gen regexp_test $(PROGS) $(QJS_IMPORT_LIB)
+ 	rm -f hello.c test_fib.c
+ 	rm -f examples/*.so tests/*.so
+-	rm -rf $(OBJDIR)/ *.dSYM/ qjs-debug
+-	rm -rf run-test262-debug run-test262-32
++	rm -rf $(OBJDIR)/ *.dSYM/ qjs-debug$(EXE)
++	rm -rf run-test262-debug$(EXE) run-test262-32$(EXE)
+ 
+-install: all
++install: all $(QJS_IMPORT_LIB)
+ 	mkdir -p "$(DESTDIR)$(prefix)/bin"
+-	$(STRIP) qjs qjsc
+-	install -m755 qjs qjsc "$(DESTDIR)$(prefix)/bin"
+-	ln -sf qjs "$(DESTDIR)$(prefix)/bin/qjscalc"
++	$(STRIP) qjs$(EXE) qjsc$(EXE)
++	install -m755 qjs$(EXE) qjsc$(EXE) "$(DESTDIR)$(prefix)/bin"
++	ln -sf qjs$(EXE) "$(DESTDIR)$(prefix)/bin/qjscalc$(EXE)"
+ 	mkdir -p "$(DESTDIR)$(prefix)/lib/quickjs"
+ 	install -m644 libquickjs.a "$(DESTDIR)$(prefix)/lib/quickjs"
++ifdef CONFIG_WIN32
++	install -m644 $(QJS_IMPORT_LIB) "$(DESTDIR)$(prefix)/lib/quickjs"
++endif
+ ifdef CONFIG_LTO
+ 	install -m644 libquickjs.lto.a "$(DESTDIR)$(prefix)/lib/quickjs"
+ endif
+@@ -326,10 +391,10 @@ hello.c: $(QJSC) $(HELLO_SRCS)
+ 	$(QJSC) -e $(HELLO_OPTS) -o $@ $(HELLO_SRCS)
+ 
+ ifdef CONFIG_M32
+-examples/hello: $(OBJDIR)/hello.m32s.o $(patsubst %.o, %.m32s.o, $(QJS_LIB_OBJS))
++examples/hello$(EXE): $(OBJDIR)/hello$(EXAMPLE_M32_SUFFIX) $(patsubst %.o, %$(EXAMPLE_M32_SUFFIX), $(QJS_LIB_OBJS))
+ 	$(CC) -m32 $(LDFLAGS) -o $@ $^ $(LIBS)
+ else
+-examples/hello: $(OBJDIR)/hello.o $(QJS_LIB_OBJS)
++examples/hello$(EXE): $(OBJDIR)/hello$(EXAMPLE_OBJ_SUFFIX) $(QJS_PLAIN_LIB_OBJS)
+ 	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
+ endif
+ 
+@@ -338,7 +403,7 @@ HELLO_MODULE_SRCS=examples/hello_module.js
+ HELLO_MODULE_OPTS=-fno-string-normalize -fno-map -fno-promise -fno-typedarray \
+            -fno-typedarray -fno-regexp -fno-json -fno-eval -fno-proxy \
+            -fno-date -m
+-examples/hello_module: $(QJSC) libquickjs$(LTOEXT).a $(HELLO_MODULE_SRCS)
++examples/hello_module$(EXE): $(QJSC) libquickjs$(LTOEXT).a $(HELLO_MODULE_SRCS)
+ 	$(QJSC) $(HELLO_MODULE_OPTS) -o $@ $(HELLO_MODULE_SRCS)
+ 
+ # use of an external C module (static compilation)
+@@ -346,14 +411,14 @@ examples/hello_module: $(QJSC) libquickjs$(LTOEXT).a $(HELLO_MODULE_SRCS)
+ test_fib.c: $(QJSC) examples/test_fib.js
+ 	$(QJSC) -e -M examples/fib.so,fib -m -o $@ examples/test_fib.js
+ 
+-examples/test_fib: $(OBJDIR)/test_fib.o $(OBJDIR)/examples/fib.o libquickjs$(LTOEXT).a
++examples/test_fib$(EXE): $(OBJDIR)/test_fib$(EXAMPLE_OBJ_SUFFIX) $(OBJDIR)/examples/fib$(EXAMPLE_OBJ_SUFFIX) libquickjs$(LTOEXT).a
+ 	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
+ 
+-examples/fib.so: $(OBJDIR)/examples/fib.pic.o
+-	$(CC) $(LDFLAGS) -shared -o $@ $^
++examples/fib.so: $(OBJDIR)/examples/fib$(PIC_OBJ_SUFFIX) $(QJS_MODULE_DEP)
++	$(CC) $(LDFLAGS) -shared -o $@ $< $(QJS_IMPORT_LIB)
+ 
+-examples/point.so: $(OBJDIR)/examples/point.pic.o
+-	$(CC) $(LDFLAGS) -shared -o $@ $^
++examples/point.so: $(OBJDIR)/examples/point$(PIC_OBJ_SUFFIX) $(QJS_MODULE_DEP)
++	$(CC) $(LDFLAGS) -shared -o $@ $< $(QJS_IMPORT_LIB)
+ 
+ ###############################################################################
+ # documentation
+@@ -381,78 +446,78 @@ ifndef CONFIG_DARWIN
+ test: tests/bjson.so examples/point.so
+ endif
+ ifdef CONFIG_M32
+-test: qjs32
++test: qjs32$(EXE)
+ endif
+ 
+-test: qjs
+-	./qjs tests/test_closure.js
+-	./qjs tests/test_language.js
+-	./qjs tests/test_builtin.js
+-	./qjs tests/test_loop.js
+-	./qjs tests/test_std.js
+-	./qjs tests/test_worker.js
++test: qjs$(EXE)
++	./qjs$(EXE) tests/test_closure.js
++	./qjs$(EXE) tests/test_language.js
++	./qjs$(EXE) tests/test_builtin.js
++	./qjs$(EXE) tests/test_loop.js
++	./qjs$(EXE) tests/test_std.js
++	./qjs$(EXE) tests/test_worker.js
+ ifndef CONFIG_DARWIN
+ ifdef CONFIG_BIGNUM
+-	./qjs --bignum tests/test_bjson.js
++	./qjs$(EXE) --bignum tests/test_bjson.js
+ else
+-	./qjs tests/test_bjson.js
++	./qjs$(EXE) tests/test_bjson.js
+ endif
+-	./qjs examples/test_point.js
++	./qjs$(EXE) examples/test_point.js
+ endif
+ ifdef CONFIG_BIGNUM
+-	./qjs --bignum tests/test_op_overloading.js
+-	./qjs --bignum tests/test_bignum.js
+-	./qjs --qjscalc tests/test_qjscalc.js
++	./qjs$(EXE) --bignum tests/test_op_overloading.js
++	./qjs$(EXE) --bignum tests/test_bignum.js
++	./qjs$(EXE) --qjscalc tests/test_qjscalc.js
+ endif
+ ifdef CONFIG_M32
+-	./qjs32 tests/test_closure.js
+-	./qjs32 tests/test_language.js
+-	./qjs32 tests/test_builtin.js
+-	./qjs32 tests/test_loop.js
+-	./qjs32 tests/test_std.js
+-	./qjs32 tests/test_worker.js
++	./qjs32$(EXE) tests/test_closure.js
++	./qjs32$(EXE) tests/test_language.js
++	./qjs32$(EXE) tests/test_builtin.js
++	./qjs32$(EXE) tests/test_loop.js
++	./qjs32$(EXE) tests/test_std.js
++	./qjs32$(EXE) tests/test_worker.js
+ ifdef CONFIG_BIGNUM
+-	./qjs32 --bignum tests/test_op_overloading.js
+-	./qjs32 --bignum tests/test_bignum.js
+-	./qjs32 --qjscalc tests/test_qjscalc.js
++	./qjs32$(EXE) --bignum tests/test_op_overloading.js
++	./qjs32$(EXE) --bignum tests/test_bignum.js
++	./qjs32$(EXE) --qjscalc tests/test_qjscalc.js
+ endif
+ endif
+ 
+-stats: qjs qjs32
+-	./qjs -qd
+-	./qjs32 -qd
++stats: qjs$(EXE) qjs32$(EXE)
++	./qjs$(EXE) -qd
++	./qjs32$(EXE) -qd
+ 
+-microbench: qjs
+-	./qjs tests/microbench.js
++microbench: qjs$(EXE)
++	./qjs$(EXE) tests/microbench.js
+ 
+-microbench-32: qjs32
+-	./qjs32 tests/microbench.js
++microbench-32: qjs32$(EXE)
++	./qjs32$(EXE) tests/microbench.js
+ 
+ # ES5 tests (obsolete)
+-test2o: run-test262
+-	time ./run-test262 -m -c test262o.conf
++test2o: run-test262$(EXE)
++	time ./run-test262$(EXE) -m -c test262o.conf
+ 
+-test2o-32: run-test262-32
+-	time ./run-test262-32 -m -c test262o.conf
++test2o-32: run-test262-32$(EXE)
++	time ./run-test262-32$(EXE) -m -c test262o.conf
+ 
+-test2o-update: run-test262
+-	./run-test262 -u -c test262o.conf
++test2o-update: run-test262$(EXE)
++	./run-test262$(EXE) -u -c test262o.conf
+ 
+ # Test262 tests
+-test2-default: run-test262
+-	time ./run-test262 -m -c test262.conf
++test2-default: run-test262$(EXE)
++	time ./run-test262$(EXE) -m -c test262.conf
+ 
+-test2: run-test262
+-	time ./run-test262 -m -c test262.conf -a
++test2: run-test262$(EXE)
++	time ./run-test262$(EXE) -m -c test262.conf -a
+ 
+-test2-32: run-test262-32
+-	time ./run-test262-32 -m -c test262.conf -a
++test2-32: run-test262-32$(EXE)
++	time ./run-test262-32$(EXE) -m -c test262.conf -a
+ 
+-test2-update: run-test262
+-	./run-test262 -u -c test262.conf -a
++test2-update: run-test262$(EXE)
++	./run-test262$(EXE) -u -c test262.conf -a
+ 
+-test2-check: run-test262
+-	time ./run-test262 -m -c test262.conf -E -a
++test2-check: run-test262$(EXE)
++	time ./run-test262$(EXE) -m -c test262.conf -E -a
+ 
+ testall: all test microbench test2o test2
+ 
+@@ -460,11 +525,11 @@ testall-32: all test-32 microbench-32 test2o-32 test2-32
+ 
+ testall-complete: testall testall-32
+ 
+-bench-v8: qjs
++bench-v8: qjs$(EXE)
+ 	make -C tests/bench-v8
+-	./qjs -d tests/bench-v8/combined.js
++	./qjs$(EXE) -d tests/bench-v8/combined.js
+ 
+-tests/bjson.so: $(OBJDIR)/tests/bjson.pic.o
+-	$(CC) $(LDFLAGS) -shared -o $@ $^ $(LIBS)
++tests/bjson.so: $(OBJDIR)/tests/bjson$(PIC_OBJ_SUFFIX) $(QJS_MODULE_DEP)
++	$(CC) $(LDFLAGS) -shared -o $@ $< $(QJS_IMPORT_LIB) $(LIBS)
+ 
+ -include $(wildcard $(OBJDIR)/*.d)
 diff --git a/fuzzilli-coverage-coff.c b/fuzzilli-coverage-coff.c
 new file mode 100644
 index 0000000..686a60a
@@ -132,7 +495,7 @@ index 0000000..686a60a
 +uint32_t __stop___sancov_guards __attribute__((section(".SCOV$GZ"), used));
 +#endif
 diff --git a/qjs.c b/qjs.c
-index d56b843..f97da97 100644
+index d56b843..5d8eaf2 100644
 --- a/qjs.c
 +++ b/qjs.c
 @@ -37,6 +37,13 @@
@@ -363,7 +726,23 @@ index d56b843..f97da97 100644
      
  #ifdef CONFIG_BIGNUM
      /* load jscalc runtime if invoked as 'qjscalc' */
-@@ -445,6 +652,10 @@ int main(int argc, char **argv)
+@@ -334,7 +541,15 @@ int main(int argc, char **argv)
+         p = strrchr(exename, '/');
+         if (p)
+             exename = p + 1;
++#ifdef _WIN32
++        p = strrchr(exename, '\\');
++        if (p)
++            exename = p + 1;
++        load_jscalc = !_stricmp(exename, "qjscalc") ||
++                      !_stricmp(exename, "qjscalc.exe");
++#else
+         load_jscalc = !strcmp(exename, "qjscalc");
++#endif
+     }
+ #endif
+     
+@@ -445,6 +660,10 @@ int main(int argc, char **argv)
                  stack_size = (size_t)strtod(argv[optind++], NULL);
                  continue;
              }
@@ -374,7 +753,7 @@ index d56b843..f97da97 100644
              if (opt) {
                  fprintf(stderr, "qjs: unknown option '-%c'\n", opt);
              } else {
-@@ -454,6 +665,24 @@ int main(int argc, char **argv)
+@@ -454,6 +673,24 @@ int main(int argc, char **argv)
          }
      }
  
@@ -399,7 +778,7 @@ index d56b843..f97da97 100644
      if (load_jscalc)
          bignum_ext = 1;
  
-@@ -482,7 +711,9 @@ int main(int argc, char **argv)
+@@ -482,7 +719,9 @@ int main(int argc, char **argv)
      /* loader for ES6 modules */
      JS_SetModuleLoaderFunc(rt, NULL, js_module_loader, NULL);
  
@@ -410,7 +789,7 @@ index d56b843..f97da97 100644
          JS_SetHostPromiseRejectionTracker(rt, js_std_promise_rejection_tracker,
                                            NULL);
      }
-@@ -509,23 +740,107 @@ int main(int argc, char **argv)
+@@ -509,23 +748,107 @@ int main(int argc, char **argv)
                  goto fail;
          }
  
@@ -533,8 +912,877 @@ index d56b843..f97da97 100644
      }
      
      if (dump_memory) {
+diff --git a/qjsc.c b/qjsc.c
+index b9f1e4c..ebc99e0 100644
+--- a/qjsc.c
++++ b/qjsc.c
+@@ -29,7 +29,9 @@
+ #include <assert.h>
+ #include <unistd.h>
+ #include <errno.h>
+-#if !defined(_WIN32)
++#if defined(_WIN32)
++#include <windows.h>
++#else
+ #include <sys/wait.h>
+ #endif
+ 
+@@ -241,7 +243,11 @@ JSModuleDef *jsc_module_loader(JSContext *ctx,
+         namelist_add(&init_module_list, e->name, e->short_name, 0);
+         /* create a dummy module */
+         m = JS_NewCModule(ctx, module_name, js_module_dummy_init);
+-    } else if (has_suffix(module_name, ".so")) {
++    } else if (has_suffix(module_name, ".so")
++#ifdef _WIN32
++               || has_suffix(module_name, ".dll")
++#endif
++               ) {
+         fprintf(stderr, "Warning: binary module '%s' will be dynamically loaded\n", module_name);
+         /* create a dummy module */
+         m = JS_NewCModule(ctx, module_name, js_module_dummy_init);
+@@ -332,6 +338,7 @@ static const char main_c_template1[] =
+ 
+ static const char main_c_template2[] =
+     "  js_std_loop(ctx);\n"
++    "  js_std_free_handlers(rt);\n"
+     "  JS_FreeContext(ctx);\n"
+     "  JS_FreeRuntime(rt);\n"
+     "  return 0;\n"
+@@ -374,8 +381,158 @@ void help(void)
+     exit(1);
+ }
+ 
+-#if defined(CONFIG_CC) && !defined(_WIN32)
++#ifdef CONFIG_CC
++
++#ifdef _WIN32
++static char *append_quoted_arg(char *p, const char *arg)
++{
++    size_t n;
++
++    *p++ = '"';
++    while (*arg) {
++        n = 0;
++        while (*arg == '\\') {
++            n++;
++            arg++;
++        }
++        if (*arg == '"') {
++            while (n != 0) {
++                *p++ = '\\';
++                *p++ = '\\';
++                n--;
++            }
++            *p++ = '\\';
++            *p++ = *arg++;
++        } else {
++            if (!*arg)
++                n *= 2;
++            while (n != 0) {
++                *p++ = '\\';
++                n--;
++            }
++            if (*arg)
++                *p++ = *arg++;
++        }
++    }
++    *p++ = '"';
++    return p;
++}
+ 
++static char *get_compiler_path(const char *name)
++{
++    const char *search_path, *base, *p;
++    char *found, *path;
++    DWORD len, ret;
++    size_t name_len;
++
++    if (strpbrk(name, "\\/:")) {
++        name_len = strlen(name);
++        found = malloc(name_len + sizeof(".exe"));
++        if (!found)
++            return NULL;
++        memcpy(found, name, name_len + 1);
++        base = strrchr(name, '\\');
++        p = strrchr(name, '/');
++        if (p && (!base || p > base))
++            base = p;
++        if (!base)
++            base = name;
++        if (!strchr(base, '.'))
++            strcat(found, ".exe");
++    } else {
++        search_path = getenv("PATH");
++        if (!search_path || !*search_path)
++            return NULL;
++        len = SearchPathA(search_path, name, ".exe", 0, NULL, NULL);
++        if (!len)
++            return NULL;
++        found = malloc(len);
++        if (!found)
++            return NULL;
++        ret = SearchPathA(search_path, name, ".exe", len, found, NULL);
++        if (!ret || ret >= len) {
++            free(found);
++            return NULL;
++        }
++    }
++
++    len = GetFullPathNameA(found, 0, NULL, NULL);
++    if (!len) {
++        free(found);
++        return NULL;
++    }
++    path = malloc(len);
++    if (!path) {
++        free(found);
++        return NULL;
++    }
++    ret = GetFullPathNameA(found, len, path, NULL);
++    free(found);
++    if (!ret || ret >= len) {
++        free(path);
++        return NULL;
++    }
++    return path;
++}
++
++static int exec_cmd(char **argv)
++{
++    STARTUPINFOA si;
++    PROCESS_INFORMATION pi;
++    DWORD status;
++    char *path, *cmdline, *p;
++    size_t len, cmdline_len;
++    int i, ret;
++
++    path = get_compiler_path(argv[0]);
++    if (!path) {
++        fprintf(stderr, "%s: compiler not found\n", argv[0]);
++        return 1;
++    }
++
++    cmdline_len = 1;
++    for(i = 0; argv[i]; i++) {
++        len = strlen(argv[i]);
++        if (len > (SIZE_MAX - cmdline_len - 3) / 2) {
++            free(path);
++            return 1;
++        }
++        cmdline_len += 2 * len + 3;
++    }
++    cmdline = malloc(cmdline_len);
++    if (!cmdline) {
++        free(path);
++        return 1;
++    }
++    p = cmdline;
++    for(i = 0; argv[i]; i++) {
++        if (i != 0)
++            *p++ = ' ';
++        p = append_quoted_arg(p, argv[i]);
++    }
++    *p = '\0';
++
++    memset(&si, 0, sizeof(si));
++    si.cb = sizeof(si);
++    if (!CreateProcessA(path, cmdline, NULL, NULL, TRUE, 0,
++                        NULL, NULL, &si, &pi)) {
++        fprintf(stderr, "%s: could not start compiler (%lu)\n",
++                argv[0], GetLastError());
++        ret = 1;
++    } else {
++        ret = 1;
++        if (WaitForSingleObject(pi.hProcess, INFINITE) != WAIT_FAILED &&
++            GetExitCodeProcess(pi.hProcess, &status)) {
++            ret = (int)status;
++        }
++        CloseHandle(pi.hThread);
++        CloseHandle(pi.hProcess);
++    }
++    free(cmdline);
++    free(path);
++    return ret;
++}
++#else
+ int exec_cmd(char **argv)
+ {
+     int pid, status, ret;
+@@ -393,6 +550,7 @@ int exec_cmd(char **argv)
+     }
+     return WEXITSTATUS(status);
+ }
++#endif
+ 
+ static int output_executable(const char *out_filename, const char *cfilename,
+                              BOOL use_lto, BOOL verbose, const char *exename)
+@@ -402,10 +560,21 @@ static int output_executable(const char *out_filename, const char *cfilename,
+     char libjsname[1024];
+     char exe_dir[1024], inc_dir[1024], lib_dir[1024], buf[1024], *p;
+     int ret;
++#ifdef _WIN32
++    char *import_arg = NULL;
++    size_t len, prefix_len;
++#endif
+     
+     /* get the directory of the executable */
+     pstrcpy(exe_dir, sizeof(exe_dir), exename);
+     p = strrchr(exe_dir, '/');
++#ifdef _WIN32
++    {
++        char *p1 = strrchr(exe_dir, '\\');
++        if (p1 && (!p || p1 > p))
++            p = p1;
++    }
++#endif
+     if (p) {
+         *p = '\0';
+     } else {
+@@ -443,14 +612,40 @@ static int output_executable(const char *out_filename, const char *cfilename,
+     *arg++ = inc_dir;
+     *arg++ = "-o";
+     *arg++ = out_filename;
+-    if (dynamic_export)
++    if (dynamic_export) {
++#ifdef _WIN32
++        *arg++ = "-Wl,--export-all-symbols";
++        /* A dynamic module must link against this executable's exports. */
++        prefix_len = sizeof("--out-implib=") - 1;
++        len = strlen(out_filename);
++        if (len >= 4 && !_stricmp(out_filename + len - 4, ".exe"))
++            len -= 4;
++        if (len > SIZE_MAX - prefix_len - sizeof(".dll.a")) {
++            unlink(cfilename);
++            return 1;
++        }
++        import_arg = malloc(prefix_len + len + sizeof(".dll.a"));
++        if (!import_arg) {
++            unlink(cfilename);
++            return 1;
++        }
++        memcpy(import_arg, "--out-implib=", prefix_len);
++        memcpy(import_arg + prefix_len, out_filename, len);
++        memcpy(import_arg + prefix_len + len, ".dll.a", sizeof(".dll.a"));
++        *arg++ = "-Xlinker";
++        *arg++ = import_arg;
++#else
+         *arg++ = "-rdynamic";
++#endif
++    }
+     *arg++ = cfilename;
+     snprintf(libjsname, sizeof(libjsname), "%s/libquickjs%s%s.a",
+              lib_dir, bn_suffix, lto_suffix);
+     *arg++ = libjsname;
+     *arg++ = "-lm";
++#ifndef _WIN32
+     *arg++ = "-ldl";
++#endif
+     *arg++ = "-lpthread";
+     *arg = NULL;
+     
+@@ -462,6 +657,9 @@ static int output_executable(const char *out_filename, const char *cfilename,
+     
+     ret = exec_cmd((char **)argv);
+     unlink(cfilename);
++#ifdef _WIN32
++    free(import_arg);
++#endif
+     return ret;
+ }
+ #else
+@@ -605,7 +803,11 @@ int main(int argc, char **argv)
+ 
+     if (!out_filename) {
+         if (output_type == OUTPUT_EXECUTABLE) {
++#ifdef _WIN32
++            out_filename = "a.exe";
++#else
+             out_filename = "a.out";
++#endif
+         } else {
+             out_filename = "out.c";
+         }
+diff --git a/quickjs-libc.c b/quickjs-libc.c
+index e180dd0..27a67c7 100644
+--- a/quickjs-libc.c
++++ b/quickjs-libc.c
+@@ -57,10 +57,8 @@ typedef sig_t sighandler_t;
+ 
+ #endif
+ 
+-#if !defined(_WIN32)
+-/* enable the os.Worker API. IT relies on POSIX threads */
++/* enable the os.Worker API. It relies on pthreads. */
+ #define USE_WORKER
+-#endif
+ 
+ #ifdef USE_WORKER
+ #include <pthread.h>
+@@ -109,8 +107,12 @@ typedef struct {
+     pthread_mutex_t mutex;
+ #endif
+     struct list_head msg_queue; /* list of JSWorkerMessage.link */
++#if defined(_WIN32)
++    HANDLE wake_event;
++#else
+     int read_fd;
+     int write_fd;
++#endif
+ } JSWorkerMessagePipe;
+ 
+ typedef struct {
+@@ -127,6 +129,9 @@ typedef struct JSThreadState {
+     int eval_script_recurse; /* only used in the main thread */
+     /* not used in the main thread */
+     JSWorkerMessagePipe *recv_pipe, *send_pipe;
++#if defined(_WIN32)
++    HANDLE wake_event;
++#endif
+ } JSThreadState;
+ 
+ static uint64_t os_pending_signals;
+@@ -457,8 +462,83 @@ typedef JSModuleDef *(JSInitModuleFunc)(JSContext *ctx,
+ static JSModuleDef *js_module_loader_so(JSContext *ctx,
+                                         const char *module_name)
+ {
+-    JS_ThrowReferenceError(ctx, "shared library modules are not supported yet");
+-    return NULL;
++    JSModuleDef *m;
++    HMODULE hd;
++    JSInitModuleFunc *init;
++    wchar_t *filename, *full_filename;
++    int len;
++    DWORD full_len, ret, err;
++
++    len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
++                              module_name, -1, NULL, 0);
++    if (!len) {
++        JS_ThrowReferenceError(ctx, "could not load module filename '%s': invalid UTF-8 path",
++                               module_name);
++        return NULL;
++    }
++    if ((size_t)len > SIZE_MAX / sizeof(*filename)) {
++        JS_ThrowOutOfMemory(ctx);
++        return NULL;
++    }
++    filename = js_malloc(ctx, len * sizeof(*filename));
++    if (!filename)
++        return NULL;
++    if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
++                             module_name, -1, filename, len)) {
++        js_free(ctx, filename);
++        JS_ThrowReferenceError(ctx, "could not load module filename '%s': invalid UTF-8 path",
++                               module_name);
++        return NULL;
++    }
++
++    full_len = GetFullPathNameW(filename, 0, NULL, NULL);
++    if (!full_len || (size_t)full_len > SIZE_MAX / sizeof(*full_filename)) {
++        js_free(ctx, filename);
++        JS_ThrowReferenceError(ctx, "could not resolve module filename '%s'",
++                               module_name);
++        return NULL;
++    }
++    full_filename = js_malloc(ctx, full_len * sizeof(*full_filename));
++    if (!full_filename) {
++        js_free(ctx, filename);
++        return NULL;
++    }
++    ret = GetFullPathNameW(filename, full_len, full_filename, NULL);
++    js_free(ctx, filename);
++    if (!ret || ret >= full_len) {
++        js_free(ctx, full_filename);
++        JS_ThrowReferenceError(ctx, "could not resolve module filename '%s'",
++                               module_name);
++        return NULL;
++    }
++
++    hd = LoadLibraryExW(full_filename, NULL,
++                        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
++                        LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
++    err = GetLastError();
++    js_free(ctx, full_filename);
++    if (!hd) {
++        JS_ThrowReferenceError(ctx, "could not load module filename '%s' as shared library (Windows error %lu)",
++                               module_name, (unsigned long)err);
++        return NULL;
++    }
++
++    init = (JSInitModuleFunc *)GetProcAddress(hd, "js_init_module");
++    if (!init) {
++        JS_ThrowReferenceError(ctx, "could not load module filename '%s': js_init_module not found",
++                               module_name);
++        FreeLibrary(hd);
++        return NULL;
++    }
++
++    m = init(ctx, module_name);
++    if (!m) {
++        JS_ThrowReferenceError(ctx, "could not load module filename '%s': initialization error",
++                               module_name);
++        FreeLibrary(hd);
++        return NULL;
++    }
++    return m;
+ }
+ #else
+ static JSModuleDef *js_module_loader_so(JSContext *ctx,
+@@ -569,7 +649,11 @@ JSModuleDef *js_module_loader(JSContext *ctx,
+ {
+     JSModuleDef *m;
+ 
+-    if (has_suffix(module_name, ".so")) {
++    if (has_suffix(module_name, ".so")
++#if defined(_WIN32)
++        || has_suffix(module_name, ".dll")
++#endif
++        ) {
+         m = js_module_loader_so(ctx, module_name);
+     } else {
+         size_t buf_len;
+@@ -2075,83 +2159,6 @@ static void call_handler(JSContext *ctx, JSValueConst func)
+     JS_FreeValue(ctx, ret);
+ }
+ 
+-#if defined(_WIN32)
+-
+-static int js_os_poll(JSContext *ctx)
+-{
+-    JSRuntime *rt = JS_GetRuntime(ctx);
+-    JSThreadState *ts = JS_GetRuntimeOpaque(rt);
+-    int min_delay, console_fd;
+-    int64_t cur_time, delay;
+-    JSOSRWHandler *rh;
+-    struct list_head *el;
+-    
+-    /* XXX: handle signals if useful */
+-
+-    if (list_empty(&ts->os_rw_handlers) && list_empty(&ts->os_timers))
+-        return -1; /* no more events */
+-    
+-    /* XXX: only timers and basic console input are supported */
+-    if (!list_empty(&ts->os_timers)) {
+-        cur_time = get_time_ms();
+-        min_delay = 10000;
+-        list_for_each(el, &ts->os_timers) {
+-            JSOSTimer *th = list_entry(el, JSOSTimer, link);
+-            delay = th->timeout - cur_time;
+-            if (delay <= 0) {
+-                JSValue func;
+-                /* the timer expired */
+-                func = th->func;
+-                th->func = JS_UNDEFINED;
+-                unlink_timer(rt, th);
+-                if (!th->has_object)
+-                    free_timer(rt, th);
+-                call_handler(ctx, func);
+-                JS_FreeValue(ctx, func);
+-                return 0;
+-            } else if (delay < min_delay) {
+-                min_delay = delay;
+-            }
+-        }
+-    } else {
+-        min_delay = -1;
+-    }
+-
+-    console_fd = -1;
+-    list_for_each(el, &ts->os_rw_handlers) {
+-        rh = list_entry(el, JSOSRWHandler, link);
+-        if (rh->fd == 0 && !JS_IsNull(rh->rw_func[0])) {
+-            console_fd = rh->fd;
+-            break;
+-        }
+-    }
+-
+-    if (console_fd >= 0) {
+-        DWORD ti, ret;
+-        HANDLE handle;
+-        if (min_delay == -1)
+-            ti = INFINITE;
+-        else
+-            ti = min_delay;
+-        handle = (HANDLE)_get_osfhandle(console_fd);
+-        ret = WaitForSingleObject(handle, ti);
+-        if (ret == WAIT_OBJECT_0) {
+-            list_for_each(el, &ts->os_rw_handlers) {
+-                rh = list_entry(el, JSOSRWHandler, link);
+-                if (rh->fd == console_fd && !JS_IsNull(rh->rw_func[0])) {
+-                    call_handler(ctx, rh->rw_func[0]);
+-                    /* must stop because the list may have been modified */
+-                    break;
+-                }
+-            }
+-        }
+-    } else {
+-        Sleep(min_delay);
+-    }
+-    return 0;
+-}
+-#else
+-
+ #ifdef USE_WORKER
+ 
+ static void js_free_message(JSWorkerMessage *msg);
+@@ -2165,7 +2172,7 @@ static int handle_posted_message(JSRuntime *rt, JSContext *ctx,
+     struct list_head *el;
+     JSWorkerMessage *msg;
+     JSValue obj, data_obj, func, retval;
+-    
++
+     pthread_mutex_lock(&ps->mutex);
+     if (!list_empty(&ps->msg_queue)) {
+         el = ps->msg_queue.next;
+@@ -2174,6 +2181,7 @@ static int handle_posted_message(JSRuntime *rt, JSContext *ctx,
+         /* remove the message from the queue */
+         list_del(&msg->link);
+ 
++#if !defined(_WIN32)
+         if (list_empty(&ps->msg_queue)) {
+             uint8_t buf[16];
+             int ret;
+@@ -2185,6 +2193,7 @@ static int handle_posted_message(JSRuntime *rt, JSContext *ctx,
+                     break;
+             }
+         }
++#endif
+ 
+         pthread_mutex_unlock(&ps->mutex);
+ 
+@@ -2192,7 +2201,7 @@ static int handle_posted_message(JSRuntime *rt, JSContext *ctx,
+                                  JS_READ_OBJ_SAB | JS_READ_OBJ_REFERENCE);
+ 
+         js_free_message(msg);
+-        
++
+         if (JS_IsException(data_obj))
+             goto fail;
+         obj = JS_NewObject(ctx);
+@@ -2229,6 +2238,100 @@ static int handle_posted_message(JSRuntime *rt, JSContext *ctx,
+ }
+ #endif
+ 
++#if defined(_WIN32)
++
++static int js_os_poll(JSContext *ctx)
++{
++    JSRuntime *rt = JS_GetRuntime(ctx);
++    JSThreadState *ts = JS_GetRuntimeOpaque(rt);
++    int min_delay, console_fd;
++    int64_t cur_time, delay;
++    JSOSRWHandler *rh;
++    struct list_head *el;
++    HANDLE handles[2];
++    DWORD count, ret, ti;
++
++    /* XXX: handle signals if useful */
++
++    if (list_empty(&ts->os_rw_handlers) && list_empty(&ts->os_timers) &&
++        list_empty(&ts->port_list))
++        return -1; /* no more events */
++
++    /* XXX: only timers, basic console input and workers are supported */
++    if (!list_empty(&ts->os_timers)) {
++        cur_time = get_time_ms();
++        min_delay = 10000;
++        list_for_each(el, &ts->os_timers) {
++            JSOSTimer *th = list_entry(el, JSOSTimer, link);
++            delay = th->timeout - cur_time;
++            if (delay <= 0) {
++                JSValue func;
++                /* the timer expired */
++                func = th->func;
++                th->func = JS_UNDEFINED;
++                unlink_timer(rt, th);
++                if (!th->has_object)
++                    free_timer(rt, th);
++                call_handler(ctx, func);
++                JS_FreeValue(ctx, func);
++                return 0;
++            } else if (delay < min_delay) {
++                min_delay = delay;
++            }
++        }
++    } else {
++        min_delay = -1;
++    }
++
++    list_for_each(el, &ts->port_list) {
++        JSWorkerMessageHandler *port = list_entry(el, JSWorkerMessageHandler, link);
++        if (!JS_IsNull(port->on_message_func) &&
++            handle_posted_message(rt, ctx, port))
++            return 0;
++    }
++
++    console_fd = -1;
++    list_for_each(el, &ts->os_rw_handlers) {
++        rh = list_entry(el, JSOSRWHandler, link);
++        if (rh->fd == 0 && !JS_IsNull(rh->rw_func[0])) {
++            console_fd = rh->fd;
++            break;
++        }
++    }
++
++    ti = min_delay < 0 ? INFINITE : (DWORD)min_delay;
++    count = 0;
++    handles[count++] = ts->wake_event;
++    if (console_fd >= 0) {
++        HANDLE handle = (HANDLE)_get_osfhandle(console_fd);
++        if (!handle || handle == INVALID_HANDLE_VALUE) {
++            JS_ThrowInternalError(ctx, "invalid console handle");
++            js_std_dump_error(ctx);
++            return -1;
++        }
++        handles[count++] = handle;
++    }
++    ret = WaitForMultipleObjects(count, handles, FALSE, ti);
++    if (ret == WAIT_FAILED) {
++        JS_ThrowInternalError(ctx, "could not wait for events (Windows error %lu)",
++                              (unsigned long)GetLastError());
++        js_std_dump_error(ctx);
++        return -1;
++    }
++    if (console_fd >= 0 && ret == WAIT_OBJECT_0 + 1) {
++        list_for_each(el, &ts->os_rw_handlers) {
++            rh = list_entry(el, JSOSRWHandler, link);
++            if (rh->fd == console_fd && !JS_IsNull(rh->rw_func[0])) {
++                call_handler(ctx, rh->rw_func[0]);
++                /* must stop because the list may have been modified */
++                break;
++            }
++        }
++    }
++    return 0;
++}
++#else
++
+ static int js_os_poll(JSContext *ctx)
+ {
+     JSRuntime *rt = JS_GetRuntime(ctx);
+@@ -3182,25 +3285,55 @@ static void js_sab_dup(void *opaque, void *ptr)
+ static JSWorkerMessagePipe *js_new_message_pipe(void)
+ {
+     JSWorkerMessagePipe *ps;
++#if !defined(_WIN32)
+     int pipe_fds[2];
+     
+     if (pipe(pipe_fds) < 0)
+         return NULL;
++#endif
+ 
+     ps = malloc(sizeof(*ps));
+     if (!ps) {
++#if !defined(_WIN32)
+         close(pipe_fds[0]);
+         close(pipe_fds[1]);
++#endif
+         return NULL;
+     }
+     ps->ref_count = 1;
+     init_list_head(&ps->msg_queue);
+     pthread_mutex_init(&ps->mutex, NULL);
++#if defined(_WIN32)
++    ps->wake_event = NULL;
++#else
+     ps->read_fd = pipe_fds[0];
+     ps->write_fd = pipe_fds[1];
++#endif
+     return ps;
+ }
+ 
++#if defined(_WIN32)
++static int js_set_message_pipe_event(JSWorkerMessagePipe *ps, HANDLE wake_event)
++{
++    HANDLE event;
++
++    if (!DuplicateHandle(GetCurrentProcess(), wake_event, GetCurrentProcess(),
++                         &event, 0, FALSE, DUPLICATE_SAME_ACCESS))
++        return -1;
++    pthread_mutex_lock(&ps->mutex);
++    assert(!ps->wake_event);
++    ps->wake_event = event;
++    if (!list_empty(&ps->msg_queue) && !SetEvent(event)) {
++        ps->wake_event = NULL;
++        pthread_mutex_unlock(&ps->mutex);
++        CloseHandle(event);
++        return -1;
++    }
++    pthread_mutex_unlock(&ps->mutex);
++    return 0;
++}
++#endif
++
+ static JSWorkerMessagePipe *js_dup_message_pipe(JSWorkerMessagePipe *ps)
+ {
+     atomic_add_int(&ps->ref_count, 1);
+@@ -3236,8 +3369,13 @@ static void js_free_message_pipe(JSWorkerMessagePipe *ps)
+             js_free_message(msg);
+         }
+         pthread_mutex_destroy(&ps->mutex);
++#if defined(_WIN32)
++        if (ps->wake_event)
++            CloseHandle(ps->wake_event);
++#else
+         close(ps->read_fd);
+         close(ps->write_fd);
++#endif
+         free(ps);
+     }
+ }
+@@ -3247,7 +3385,8 @@ static void js_free_port(JSRuntime *rt, JSWorkerMessageHandler *port)
+     if (port) {
+         js_free_message_pipe(port->recv_pipe);
+         JS_FreeValueRT(rt, port->on_message_func);
+-        list_del(&port->link);
++        if (port->link.prev)
++            list_del(&port->link);
+         js_free_rt(rt, port);
+     }
+ }
+@@ -3263,9 +3402,21 @@ static void js_worker_finalizer(JSRuntime *rt, JSValue val)
+     }
+ }
+ 
++static void js_worker_mark(JSRuntime *rt, JSValueConst val,
++                           JS_MarkFunc *mark_func)
++{
++    JSWorkerData *worker = JS_GetOpaque(val, js_worker_class_id);
++    if (worker) {
++        JSWorkerMessageHandler *port = worker->msg_handler;
++        if (port)
++            JS_MarkValue(rt, port->on_message_func, mark_func);
++    }
++}
++
+ static JSClassDef js_worker_class = {
+     "Worker",
+     .finalizer = js_worker_finalizer,
++    .gc_mark = js_worker_mark,
+ }; 
+ 
+ static void *worker_func(void *opaque)
+@@ -3288,6 +3439,12 @@ static void *worker_func(void *opaque)
+     ts = JS_GetRuntimeOpaque(rt);
+     ts->recv_pipe = args->recv_pipe;
+     ts->send_pipe = args->send_pipe;
++#if defined(_WIN32)
++    if (js_set_message_pipe_event(ts->recv_pipe, ts->wake_event)) {
++        fprintf(stderr, "Could not initialize worker event\n");
++        exit(1);
++    }
++#endif
+     
+     /* function pointer to avoid linking the whole JS_NewContext() if
+        not needed */
+@@ -3350,6 +3507,9 @@ static JSValue js_worker_ctor(JSContext *ctx, JSValueConst new_target,
+                               int argc, JSValueConst *argv)
+ {
+     JSRuntime *rt = JS_GetRuntime(ctx);
++#if defined(_WIN32)
++    JSThreadState *ts = JS_GetRuntimeOpaque(rt);
++#endif
+     WorkerFuncArgs *args = NULL;
+     pthread_t tid;
+     pthread_attr_t attr;
+@@ -3393,6 +3553,12 @@ static JSValue js_worker_ctor(JSContext *ctx, JSValueConst new_target,
+     args->send_pipe = js_new_message_pipe();
+     if (!args->send_pipe)
+         goto oom_fail;
++#if defined(_WIN32)
++    if (js_set_message_pipe_event(args->send_pipe, ts->wake_event)) {
++        JS_ThrowTypeError(ctx, "could not create worker");
++        goto fail;
++    }
++#endif
+ 
+     obj = js_worker_ctor_internal(ctx, new_target,
+                                   args->send_pipe, args->recv_pipe);
+@@ -3467,6 +3633,8 @@ static JSValue js_worker_postMessage(JSContext *ctx, JSValueConst this_val,
+ 
+     js_free(ctx, data);
+     js_free(ctx, sab_tab);
++    data = NULL;
++    sab_tab = NULL;
+     
+     /* increment the SAB reference counts */
+     for(i = 0; i < msg->sab_tab_len; i++) {
+@@ -3477,6 +3645,15 @@ static JSValue js_worker_postMessage(JSContext *ctx, JSValueConst this_val,
+     pthread_mutex_lock(&ps->mutex);
+     /* indicate that data is present */
+     if (list_empty(&ps->msg_queue)) {
++#if defined(_WIN32)
++        if (ps->wake_event && !SetEvent(ps->wake_event)) {
++            pthread_mutex_unlock(&ps->mutex);
++            for(i = 0; i < msg->sab_tab_len; i++)
++                js_sab_free(NULL, msg->sab_tab[i]);
++            JS_ThrowInternalError(ctx, "could not signal worker");
++            goto fail;
++        }
++#else
+         uint8_t ch = '\0';
+         int ret;
+         for(;;) {
+@@ -3486,6 +3663,7 @@ static JSValue js_worker_postMessage(JSContext *ctx, JSValueConst this_val,
+             if (ret < 0 && (errno != EAGAIN || errno != EINTR))
+                 break;
+         }
++#endif
+     }
+     list_add_tail(&msg->link, &ps->msg_queue);
+     pthread_mutex_unlock(&ps->mutex);
+@@ -3533,6 +3711,15 @@ static JSValue js_worker_set_onmessage(JSContext *ctx, JSValueConst this_val,
+         }
+         JS_FreeValue(ctx, port->on_message_func);
+         port->on_message_func = JS_DupValue(ctx, func);
++#if defined(_WIN32)
++        pthread_mutex_lock(&port->recv_pipe->mutex);
++        if (!list_empty(&port->recv_pipe->msg_queue) &&
++            !SetEvent(port->recv_pipe->wake_event)) {
++            pthread_mutex_unlock(&port->recv_pipe->mutex);
++            return JS_ThrowInternalError(ctx, "could not signal worker");
++        }
++        pthread_mutex_unlock(&port->recv_pipe->mutex);
++#endif
+     }
+     return JS_UNDEFINED;
+ }
+@@ -3774,6 +3961,14 @@ void js_std_init_handlers(JSRuntime *rt)
+         exit(1);
+     }
+     memset(ts, 0, sizeof(*ts));
++#if defined(_WIN32)
++    ts->wake_event = CreateEventW(NULL, FALSE, FALSE, NULL);
++    if (!ts->wake_event) {
++        free(ts);
++        fprintf(stderr, "Could not create worker event\n");
++        exit(1);
++    }
++#endif
+     init_list_head(&ts->os_rw_handlers);
+     init_list_head(&ts->os_signal_handlers);
+     init_list_head(&ts->os_timers);
+@@ -3817,9 +4012,18 @@ void js_std_free_handlers(JSRuntime *rt)
+     }
+ 
+ #ifdef USE_WORKER
+-    /* XXX: free port_list ? */
+     js_free_message_pipe(ts->recv_pipe);
+     js_free_message_pipe(ts->send_pipe);
++
++    list_for_each_safe(el, el1, &ts->port_list) {
++        JSWorkerMessageHandler *port = list_entry(el, JSWorkerMessageHandler, link);
++        /* unlink the message ports. They are freed by the Worker object */
++        port->link.prev = NULL;
++        port->link.next = NULL;
++    }
++#endif
++#if defined(_WIN32)
++    CloseHandle(ts->wake_event);
+ #endif
+ 
+     free(ts);
 diff --git a/quickjs.c b/quickjs.c
-index 7916013..1d87ca9 100644
+index 7916013..f5c0c64 100644
 --- a/quickjs.c
 +++ b/quickjs.c
 @@ -32,6 +32,10 @@
@@ -548,7 +1796,151 @@ index 7916013..1d87ca9 100644
  #if defined(__APPLE__)
  #include <malloc/malloc.h>
  #elif defined(__linux__)
-@@ -35408,6 +35412,87 @@ static JSValue JS_ReadFunctionTag(BCReaderState *s)
+@@ -62,11 +66,18 @@
+ #define MALLOC_OVERHEAD  8
+ #endif
+ 
+-#if !defined(_WIN32)
+ /* define it if printf uses the RNDN rounding mode instead of RNDNA */
++#if !defined(_WIN32) || defined(_UCRT)
+ #define CONFIG_PRINTF_RNDN
+ #endif
+ 
++#if defined(_UCRT) && defined(__MINGW32__)
++/* MinGW's ANSI printf does not honor the floating point rounding mode. */
++#define js_dtoa_snprintf __ms_snprintf
++#else
++#define js_dtoa_snprintf snprintf
++#endif
++
+ /* define to include Atomics.* operations which depend on the OS
+    threads */
+ #if !defined(EMSCRIPTEN)
+@@ -11305,7 +11316,7 @@ static void js_ecvt1(double d, int n_digits, int *decpt, int *sign, char *buf,
+ {
+     if (rounding_mode != FE_TONEAREST)
+         fesetround(rounding_mode);
+-    snprintf(buf1, buf1_size, "%+.*e", n_digits - 1, d);
++    js_dtoa_snprintf(buf1, buf1_size, "%+.*e", n_digits - 1, d);
+     if (rounding_mode != FE_TONEAREST)
+         fesetround(FE_TONEAREST);
+     *sign = (buf1[0] == '-');
+@@ -11357,8 +11368,8 @@ static int js_ecvt(double d, int n_digits, int *decpt, int *sign, char *buf,
+             int decpt1, sign1, decpt2, sign2;
+             /* The JS rounding is specified as round to nearest ties away
+                from zero (RNDNA), but in printf the "ties" case is not
+-               specified (for example it is RNDN for glibc, RNDNA for
+-               Windows), so we must round manually. */
++               specified (for example it is RNDN for glibc and UCRT),
++               so we must round manually. */
+             js_ecvt1(d, n_digits + 1, &decpt1, &sign1, buf1, FE_TONEAREST,
+                      buf_tmp, sizeof(buf_tmp));
+             /* XXX: could use 2 digits to reduce the average running time */
+@@ -11389,7 +11400,7 @@ static int js_fcvt1(char *buf, int buf_size, double d, int n_digits,
+     int n;
+     if (rounding_mode != FE_TONEAREST)
+         fesetround(rounding_mode);
+-    n = snprintf(buf, buf_size, "%.*f", n_digits, d);
++    n = js_dtoa_snprintf(buf, buf_size, "%.*f", n_digits, d);
+     if (rounding_mode != FE_TONEAREST)
+         fesetround(FE_TONEAREST);
+     assert(n < buf_size);
+@@ -11408,8 +11419,8 @@ static void js_fcvt(char *buf, int buf_size, double d, int n_digits)
+ 
+         /* The JS rounding is specified as round to nearest ties away from
+            zero (RNDNA), but in printf the "ties" case is not specified
+-           (for example it is RNDN for glibc, RNDNA for Windows), so we
+-           must round manually. */
++           (for example it is RNDN for glibc and UCRT), so we must round
++           manually. */
+         n1 = js_fcvt1(buf1, sizeof(buf1), d, n_digits + 1, FE_TONEAREST);
+         rounding_mode = FE_TONEAREST;
+         /* XXX: could use 2 digits to reduce the average running time */
+@@ -27250,6 +27261,43 @@ void JS_SetModuleLoaderFunc(JSRuntime *rt,
+     rt->module_loader_opaque = opaque;
+ }
+ 
++static char *js_module_path_sep(const char *path)
++{
++    char *p = strrchr(path, '/');
++#ifdef _WIN32
++    char *p1 = strrchr(path, '\\');
++
++    if (p1 && (!p || p1 > p))
++        p = p1;
++#endif
++    return p;
++}
++
++#ifdef _WIN32
++static BOOL js_module_path_is_root(const char *path)
++{
++    const char *p;
++
++    if (((path[0] >= 'A' && path[0] <= 'Z') ||
++         (path[0] >= 'a' && path[0] <= 'z')) &&
++        path[1] == ':' && path[2] == '\0')
++        return TRUE;
++    if ((path[0] == '/' || path[0] == '\\') &&
++        (path[1] == '/' || path[1] == '\\')) {
++        p = path + 2;
++        while (*p && *p != '/' && *p != '\\')
++            p++;
++        if (!*p)
++            return FALSE;
++        p++;
++        while (*p && *p != '/' && *p != '\\')
++            p++;
++        return *p == '\0';
++    }
++    return FALSE;
++}
++#endif
++
+ /* default module filename normalizer */
+ static char *js_default_module_normalize_name(JSContext *ctx,
+                                               const char *base_name,
+@@ -27264,7 +27312,23 @@ static char *js_default_module_normalize_name(JSContext *ctx,
+         return js_strdup(ctx, name);
+     }
+ 
+-    p = strrchr(base_name, '/');
++#ifdef _WIN32
++    if (((base_name[0] >= 'A' && base_name[0] <= 'Z') ||
++         (base_name[0] >= 'a' && base_name[0] <= 'z')) &&
++        base_name[1] == ':' &&
++        base_name[2] != '/' && base_name[2] != '\\') {
++        p = js_module_path_sep(base_name);
++        len = p ? p - base_name + 1 : 2;
++        filename = js_malloc(ctx, len + strlen(name) + 1);
++        if (!filename)
++            return NULL;
++        memcpy(filename, base_name, len);
++        strcpy(filename + len, name);
++        return filename;
++    }
++#endif
++
++    p = js_module_path_sep(base_name);
+     if (p)
+         len = p - base_name;
+     else
+@@ -27286,7 +27350,13 @@ static char *js_default_module_normalize_name(JSContext *ctx,
+                or ".." */
+             if (filename[0] == '\0')
+                 break;
+-            p = strrchr(filename, '/');
++#ifdef _WIN32
++            if (js_module_path_is_root(filename)) {
++                r += 3;
++                continue;
++            }
++#endif
++            p = js_module_path_sep(filename);
+             if (!p)
+                 p = filename;
+             else
+@@ -35408,6 +35478,87 @@ static JSValue JS_ReadFunctionTag(BCReaderState *s)
      return JS_EXCEPTION;
  }
  
@@ -636,7 +2028,7 @@ index 7916013..1d87ca9 100644
  static JSValue JS_ReadModule(BCReaderState *s)
  {
      JSContext *ctx = s->ctx;
-@@ -47856,6 +47941,7 @@ static JSValue js_global_unescape(JSContext *ctx, JSValueConst this_val,
+@@ -47856,6 +48007,7 @@ static JSValue js_global_unescape(JSContext *ctx, JSValueConst this_val,
  
  static const JSCFunctionListEntry js_global_funcs[] = {
      JS_CFUNC_DEF("parseInt", 2, js_parseInt ),
@@ -644,3 +2036,97 @@ index 7916013..1d87ca9 100644
      JS_CFUNC_DEF("parseFloat", 1, js_parseFloat ),
      JS_CFUNC_DEF("isNaN", 1, js_global_isNaN ),
      JS_CFUNC_DEF("isFinite", 1, js_global_isFinite ),
+diff --git a/tests/test_std.js b/tests/test_std.js
+index 3ea6e34..956bb46 100644
+--- a/tests/test_std.js
++++ b/tests/test_std.js
+@@ -115,8 +115,9 @@ function test_popen()
+     /* test loadFile */
+     assert(std.loadFile(fname), content);
+     
+-    /* execute the 'cat' shell command */
+-    f = std.popen("cat " + fname, "r");
++    /* execute a shell command */
++    f = std.popen((os.platform == "win32" ? "cmd /c type " : "cat ") +
++                  fname, "r");
+     str = f.readAsString();
+     f.close();
+ 
+@@ -143,7 +144,10 @@ function test_os()
+ {
+     var fd, fpath, fname, fdir, buf, buf2, i, files, err, fdate, st, link_path;
+ 
+-    assert(os.isatty(0));
++    if (os.platform == "win32")
++        assert(typeof os.isatty(0), "boolean");
++    else
++        assert(os.isatty(0));
+ 
+     fdir = "test_tmp_dir";
+     fname = "tmp_file.txt";
+@@ -159,6 +163,7 @@ function test_os()
+     
+     fd = os.open(fpath, os.O_RDWR | os.O_CREAT | os.O_TRUNC);
+     assert(fd >= 0);
++    assert(os.isatty(fd), false);
+     
+     buf = new Uint8Array(10);
+     for(i = 0; i < buf.length; i++)
+@@ -184,7 +189,8 @@ function test_os()
+     assert(err, 0);
+     assert(files.indexOf(fname) >= 0);
+ 
+-    fdate = 10000;
++    /* The Windows CRT can report -1 near the Unix epoch. */
++    fdate = os.platform == "win32" ? 946684800000 : 10000;
+ 
+     err = os.utimes(fpath, fdate, fdate);
+     assert(err, 0);
+@@ -194,18 +200,20 @@ function test_os()
+     assert(st.mode & os.S_IFMT, os.S_IFREG);
+     assert(st.mtime, fdate);
+ 
+-    err = os.symlink(fname, link_path);
+-    assert(err === 0);
+-    
+-    [st, err] = os.lstat(link_path);
+-    assert(err, 0);
+-    assert(st.mode & os.S_IFMT, os.S_IFLNK);
++    if (os.platform != "win32") {
++        err = os.symlink(fname, link_path);
++        assert(err === 0);
+ 
+-    [buf, err] = os.readlink(link_path);
+-    assert(err, 0);
+-    assert(buf, fname);
+-    
+-    assert(os.remove(link_path) === 0);
++        [st, err] = os.lstat(link_path);
++        assert(err, 0);
++        assert(st.mode & os.S_IFMT, os.S_IFLNK);
++
++        [buf, err] = os.readlink(link_path);
++        assert(err, 0);
++        assert(buf, fname);
++
++        assert(os.remove(link_path) === 0);
++    }
+ 
+     [buf, err] = os.getcwd();
+     assert(err, 0);
+@@ -227,6 +235,15 @@ function test_os_exec()
+ {
+     var ret, fds, pid, f, status;
+ 
++    if (os.platform == "win32") {
++        f = std.popen("cmd /c echo hello", "r");
++        assert(f.readAsString().trim(), "hello");
++        assert(f.close(), 0);
++        os.signal(os.SIGINT, function () { });
++        os.signal(os.SIGINT, null);
++        return;
++    }
++
+     ret = os.exec(["true"]);
+     assert(ret, 0);
+ 

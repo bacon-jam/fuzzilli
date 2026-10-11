@@ -34,7 +34,8 @@ git -C ..\quickjs apply $patch
 $env:Path = "C:\msys64\ucrt64\bin;C:\msys64\usr\bin;$env:Path"
 $env:MSYSTEM = "UCRT64"
 Push-Location ..\quickjs
-& C:\msys64\usr\bin\make.exe CONFIG_WIN32=y CROSS_PREFIX= CONFIG_LTO= qjs.exe
+& C:\msys64\usr\bin\make.exe -j2 all test
+& .\run-test262.exe -N tests\test_closure.js
 Pop-Location
 
 swift build
@@ -42,7 +43,14 @@ swift run --skip-build REPRLRun ..\quickjs\qjs.exe --reprl
 swift run --skip-build FuzzilliCli --profile=qjs --maxIterations=1000 ..\quickjs\qjs.exe
 ```
 
-The Windows build uses the native UCRT64 compiler (`CROSS_PREFIX=`) and disables
-LTO for the COFF coverage guard layout. Keep `C:\msys64\ucrt64\bin` on `PATH`
-when running Fuzzilli so Windows can load QuickJS's runtime DLLs. `REPRLRun`
-should report `All tests passed!` before fuzzing.
+The Makefile detects the native UCRT64 compiler and disables LTO on Windows.
+`make all` builds `qjs.exe`, `qjsc.exe`, `run-test262.exe`, examples, and native
+modules. Keep `C:\msys64\ucrt64\bin` on `PATH` when running Fuzzilli so Windows
+can load QuickJS's runtime DLLs. `REPRLRun` should report `All tests passed!`
+before fuzzing.
+
+Native modules built for `qjs.exe` can use `.so` or `.dll` filenames and link
+against `libqjs.dll.a`. When `qjsc.exe` compiles an executable that imports a
+native module, it also writes a companion import library named after the
+executable (for example, `demo.exe` and `demo.dll.a`). Link native modules for
+that executable against its companion import library.

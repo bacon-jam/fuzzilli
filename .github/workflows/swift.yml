@@ -49,6 +49,20 @@ jobs:
         run: swift --version
       - name: Build
         run: swift build -c ${{ matrix.kind }}
+      - name: Build patched QuickJS
+        if: ${{ matrix.kind == 'debug' }}
+        run: |
+          git clone https://github.com/bellard/quickjs.git quickjs
+          cd quickjs
+          git checkout "$(tr -d '\r\n' < ../Targets/QJS/REVISION)"
+          git apply ../Targets/QJS/Patches/Fuzzilli-instrumentation-for-QJS.patch
+          make CONFIG_LTO= qjs
+      - name: Run QuickJS REPRL tests
+        if: ${{ matrix.kind == 'debug' }}
+        run: |
+          output=$(swift run --skip-build REPRLRun ./quickjs/qjs --reprl </dev/null 2>&1)
+          printf '%s\n' "$output"
+          printf '%s\n' "$output" | grep -Fq 'All tests passed!'
       - name: Install protobuf
         # Install protoc so the presubmit can also validate the generated *.pb.swift files.
         if: ${{ matrix.os == 'ubuntu-latest' && matrix.kind == 'debug' }}
@@ -118,7 +132,8 @@ jobs:
           cd quickjs
           git checkout "$(tr -d '\r\n' < ../Targets/QJS/REVISION)"
           git apply ../Targets/QJS/Patches/Fuzzilli-instrumentation-for-QJS.patch
-          make CONFIG_WIN32=y CROSS_PREFIX= CONFIG_LTO= qjs.exe
+          make -j2 all test
+          ./run-test262.exe -N tests/test_closure.js
       - name: Run QuickJS REPRL and fuzzing checks
         shell: pwsh
         env:
